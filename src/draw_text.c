@@ -170,6 +170,36 @@ static void drawCharCn(const u8 *glyph, int x, int y, u64 colour)
 		}
 	}
 }
+//按显示宽度截断 UTF-8 字符串（在字符边界切割，不会产生乱码字节）
+//中文字符宽 16px、ASCII 宽 8px；截断时末尾以 '~' 标记，max_width 需含 '~' 的宽度
+void utf8_truncate_width(char *s, int max_width)
+{
+	int i = 0, w = 0;
+	unsigned int c1;
+
+	while ((c1 = (unsigned char)s[i]) != 0) {
+		int cw = 8, clen = 1;
+
+		if ((c1 & 0xF0) == 0xE0) {  //潜在 3 字节 UTF-8 序列（CJK 字形）
+			unsigned int u2 = (unsigned char)s[i + 1];
+			unsigned int u3 = (unsigned char)s[i + 2];
+			if (u2 && u3 && ((u2 & 0xC0) == 0x80) && ((u3 & 0xC0) == 0x80)) {
+				unsigned int code = ((c1 & 0x0F) << 12) | ((u2 & 0x3F) << 6) | (u3 & 0x3F);
+				if (font_cn_lookup(code) != NULL) {
+					cw = 16;
+					clen = 3;
+				}
+			}
+		}
+		if (w + cw > max_width - 8) {  //为 '~' 预留 8px
+			s[i] = '~';
+			s[i + 1] = 0;
+			return;
+		}
+		w += cw;
+		i += clen;
+	}
+}
 static int text_display_width(const char *s, int spacing)
 {
 	unsigned int c1, c2;

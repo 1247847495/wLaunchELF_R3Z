@@ -441,6 +441,7 @@ void drawFrame(int x1, int y1, int x2, int y2, u64 color);
 void drawChar(unsigned int c, int x, int y, u64 colour);
 int printXY(const char *s, int x, int y, u64 colour, int draw, int space);
 int printXY_sjis(const unsigned char *s, int x, int y, u64 colour, int);
+void utf8_truncate_width(char *s, int max_width);
 char *transcpy_sjis(char *d, const unsigned char *s);
 void loadIcon(void);
 int loadFont(char *path_arg);

@@ -1668,15 +1668,13 @@ int getFilePath(char *out, int cnfmode)
 						name_limit = 71 * 8;
 					}
 				}
-				if (name_limit) {                   //Do we need to check name length ?
-					int name_end = name_limit / 7;  //Max string length for acceptable spacing
+				if (name_limit) {  //Do we need to check name length ?
+					int max_width = name_limit;
 
 					if (files[top + i].stats.AttrFile & sceMcFileAttrSubdir)
-						name_end -= 1;             //For folders, reserve one character for final '/'
-					if (strlen(tmp) > name_end) {  //Is name too long for clean display ?
-						tmp[name_end - 1] = '~';   //indicate filename abbreviation
-						tmp[name_end] = 0;         //abbreviate name length to make room for details
-					}
+						max_width -= 8;  //For folders, reserve one character for final '/'
+					//按显示宽度截断（UTF-8 字符边界，中文 16px / ASCII 8px，不会切碎中文）
+					utf8_truncate_width(tmp, max_width);
 				}
 
 				if (files[top + i].stats.AttrFile & sceMcFileAttrSubdir && path[0] != 0)

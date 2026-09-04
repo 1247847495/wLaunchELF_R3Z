@@ -40,6 +40,16 @@ docker run --rm --entrypoint /bin/sh -v "$VOL:/project" -w /project "$IMAGE" -c 
     export PS2SDKSRC=/tmp/ps2sdk-src
   fi
 
+  # FatFs: switch LFN API encoding to UTF-8 so Chinese filenames on
+  # USB/MX4SIO/ATA(exFAT) survive the IOP->EE handoff (default OEM CP mangles
+  # them to "?"). Pre-seed the dependency so the later sed patch is kept.
+  git clone --depth 1 -b iop-r0.16 https://github.com/fjtrujy/FatFs.git \
+      /tmp/ps2sdk-src/common/external_deps/fatfs
+  sed -i "s/^#define[[:space:]]*FF_LFN_UNICODE[[:space:]].*/#define FF_LFN_UNICODE 2/" \
+      /tmp/ps2sdk-src/common/external_deps/fatfs/source/include/ffconf.h
+  grep -n "^#define FF_LFN_UNICODE" \
+      /tmp/ps2sdk-src/common/external_deps/fatfs/source/include/ffconf.h
+
   # 3. Build with the official R3Z profile flags (psx + no-ds34 + all)
   chmod +x scripts/ci/resolve_make_args.sh
   FLAGS="$(scripts/ci/resolve_make_args.sh psx no-ds34 all 0 0)"
