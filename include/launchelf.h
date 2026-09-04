@@ -442,6 +442,8 @@ void drawChar(unsigned int c, int x, int y, u64 colour);
 int printXY(const char *s, int x, int y, u64 colour, int draw, int space);
 int printXY_sjis(const unsigned char *s, int x, int y, u64 colour, int);
 void utf8_truncate_width(char *s, int max_width);
+int utf8_display_width(const char *s);
+int utf8_window(const char *src, int start_px, int max_px, char *dst);
 u16 gbk_lookup_uni(u16 gbk);
 int gbk_fake_to_utf8(char *dst, const char *src);
 int raw_gbk_to_utf8(char *dst, const char *src);

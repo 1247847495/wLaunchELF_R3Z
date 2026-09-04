@@ -231,7 +231,7 @@ int keyboard(char *out, int max)
 			} else if ((swapKeys && new_pad & PAD_CROSS) || (!swapKeys && new_pad & PAD_CIRCLE)) {
 				i = strlen(out);
 				if (sel <= KEY_LAST && isVirtualKeyboardLayoutKey(setting->virtual_keyboard_layout, sel)) {
-					if (i < max && i < 33) {
+					if (i < max && i < 160) {
 						strcpy(tmp, out);
 						out[cur] = getVirtualKeyboardLayoutChar(setting->virtual_keyboard_layout, sel, caps);
 						out[cur + 1] = 0;
@@ -290,7 +290,7 @@ int keyboard(char *out, int max)
 					break;
 				} else {
 					i = strlen(out);
-					if (i < max && i < 33) {
+					if (i < max && i < 160) {
 						strcpy(tmp, out);
 						out[cur] = KeyPress;
 						out[cur + 1] = 0;

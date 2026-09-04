@@ -978,6 +978,8 @@ int getFilePath(char *out, int cnfmode)
 	int event, post_event = 0;
 	int font_height;
 	int iconbase, iconcolr;
+	int scroll_px, scroll_last_sel, scroll_active;  //长名字跑马灯状态
+	u64 scroll_tick;
 
 	elisa_failed = FALSE;  //set at failure to load font, cleared at each browser entry
 
@@ -1008,6 +1010,12 @@ int getFilePath(char *out, int cnfmode)
 	if ((file_show == 2) && (elisaFnt != NULL))
 		font_height = FONT_HEIGHT + 2;
 	rows = (Menu_end_y - Menu_start_y) / font_height;
+
+	//长名字跑马灯状态：选中项名字超宽时滚动显示（支持任意长度中文名）
+	scroll_px = 0;
+	scroll_last_sel = -1;
+	scroll_active = 0;
+	scroll_tick = Timer();
 
 	event = 1;  //event = initial entry
 	while (1) {
@@ -1281,7 +1289,7 @@ int getFilePath(char *out, int cnfmode)
 							strcpy(msg0, LNG(Rename_Failed));
 						} else {
 							strcpy(tmp, files[browser_sel].name);
-							if (keyboard(tmp, 36) > 0) {
+							if (keyboard(tmp, 160) > 0) {
 								if (Rename(path, &files[browser_sel], tmp) < 0) {
 									browser_pushed = FALSE;
 									strcpy(msg0, LNG(Rename_Failed));
@@ -1303,7 +1311,7 @@ int getFilePath(char *out, int cnfmode)
 					}
 					else if (ret == NEWDIR) {
 						tmp[0] = 0;
-						if (filerConfirmExploitModify(path, NULL) > 0 && keyboard(tmp, 36) > 0) {
+						if (filerConfirmExploitModify(path, NULL) > 0 && keyboard(tmp, 160) > 0) {
 							ret = newdir(path, tmp);
 							if (ret == -17) {
 								strcpy(msg0, LNG(directory_already_exists));
@@ -1327,7 +1335,7 @@ int getFilePath(char *out, int cnfmode)
 							continue;
 						}
 						strcpy(tmp, LNG(Icon_Title));
-							if (keyboard(tmp, 36) <= 0)
+							if (keyboard(tmp, 160) <= 0)
 								goto DoneIcon;
 							if (genFixPath(path, tmp1) < 0) {
 								sprintf(msg0, "Path conversion failed: %s", path);
@@ -1346,7 +1354,7 @@ int getFilePath(char *out, int cnfmode)
 							make_iconsys(tmp, "icon.icn", tmp1);
 							browser_cd = TRUE;
 							strcpy(tmp, LNG(IconText));
-							keyboard(tmp, 36);
+							keyboard(tmp, 160);
 							if (genFixPath(path, tmp1) < 0) {
 								sprintf(msg0, "Path conversion failed: %s", path);
 								goto DoneIcon;
@@ -1617,6 +1625,23 @@ int getFilePath(char *out, int cnfmode)
 		if (browser_sel < top)
 			top = browser_sel;
 
+		//长名字跑马灯驱动：选中项名字超宽时每 120ms 前进一个字符位，
+		//触发重绘（event|=4）；循环由 drawScr() 的 vsync 同步节流
+		{
+			u64 now = Timer();
+
+			if (browser_sel != scroll_last_sel) {  //切换选中项 → 回到开头重新停留
+				scroll_last_sel = browser_sel;
+				scroll_px = 0;
+				scroll_tick = now;
+			}
+			if (scroll_active && (now - scroll_tick) >= 120) {
+				scroll_px += 16;
+				scroll_tick = now;
+				event |= 4;  //触发一次重绘
+			}
+		}
+
 		if (event || post_event) {  //NB: We need to update two frame buffers per event
 
 			//Display section
@@ -1630,7 +1655,7 @@ int getFilePath(char *out, int cnfmode)
 				font_height = FONT_HEIGHT + 2;
 			}
 			rows = (Menu_end_y - Menu_start_y) / font_height;
-
+			scroll_active = 0;  //每帧复位，由选中行超宽时置位
 			for (i = 0; i < rows; i++)  //Repeat loop for each browser text row
 			{
 				mcTitle = NULL;      //Assume that normal file/folder names are to be displayed
@@ -1680,8 +1705,27 @@ int getFilePath(char *out, int cnfmode)
 							gbk_fake_to_utf8(tmp, tmp);
 							if (files[top + i].stats.AttrFile & sceMcFileAttrSubdir)
 								max_width -= 8;  //For folders, reserve one character for final '/'
-							//按显示宽度截断（UTF-8 字符边界，中文 16px / ASCII 8px，不会切碎中文）
-							utf8_truncate_width(tmp, max_width);
+							//选中行名字超宽 → 跑马灯滚动显示(支持任意长度, 50+字也不截断);
+							//首尾各停留约 1.4 秒后循环; 未选中行 → 截断加 '~'
+							{
+								int full_w = utf8_display_width(tmp);
+
+								if ((top + i == browser_sel) && full_w > max_width) {
+									int span = full_w - max_width;
+									int phase = scroll_px % (span + 384);
+
+									if (phase < 192)
+										phase = 0;
+									else if (phase - 192 < span)
+										phase -= 192;
+									else
+										phase = span;
+									utf8_window(tmp, phase, max_width, tmp2);
+									strcpy(tmp, tmp2);
+									scroll_active = 1;
+								} else
+									utf8_truncate_width(tmp, max_width);
+							}
 						}
 
 				if (files[top + i].stats.AttrFile & sceMcFileAttrSubdir && path[0] != 0)

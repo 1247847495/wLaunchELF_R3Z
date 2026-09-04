@@ -463,6 +463,44 @@ static int text_display_width(const char *s, int spacing)
 	}
 	return w;
 }
+//UTF-8 字符串的显示宽度（ASCII 8px、中文 16px），用于判断名字是否超宽
+int utf8_display_width(const char *s)
+{
+	return text_display_width(s, 8);
+}
+
+//从 start_px 像素处截取 UTF-8 显示窗口（长名字跑马灯用）：
+//跳过完全位于 start_px 之前的字符，复制能放进 max_px 的后续字符到 dst。
+//start_px 取 8 的倍数时恰好落在字符边界；跨界字符整字包含（最多超出 8px）。
+int utf8_window(const char *src, int start_px, int max_px, char *dst)
+{
+	int i = 0, w = 0, di = 0;
+
+	while (src[i] != 0) {
+		int adv, cw, is_cjk;
+
+		if (utf8_next(src + i, &adv, &cw, &is_cjk) != NULL) {  //中文字符
+			if (w + cw > start_px) {                //字符尾部进入窗口
+				if (w + cw - start_px > max_px)     //放不下 → 到此为止
+					break;
+				memcpy(dst + di, src + i, adv);
+				di += adv;
+			}
+			w += cw;
+			i += adv;
+		} else {                                    //单字节字符按 8px 计
+			if (w + 8 > start_px) {
+				if (w + 8 - start_px > max_px)
+					break;
+				dst[di++] = src[i];
+			}
+			w += 8;
+			i++;
+		}
+	}
+	dst[di] = 0;
+	return di;
+}
 int printXY(const char *s, int x, int y, u64 colour, int draw, int space)
 {
 	unsigned int c1, c2;
