@@ -1,14 +1,16 @@
 #!/bin/bash
 # Docker build for wLaunchELF (Chinese localized build)
-# Mirrors the official upstream CI (.github/workflows/compile.yml) exactly:
-#   - official toolchain image ghcr.io/ps2homebrew/ps2homebrew:main
-#   - same dependency install, PS2SDKSRC resolution, make flags
-#   - R3Z variant profile: psx + no-ds34 + all storage
-# No toolchain patches are applied: the official image works out of the box.
+# Mirrors the official upstream CI (.github/workflows/compile.yml):
+#   - current official toolchain image (ps2dev/ps2dev on Docker Hub)
+#   - same dependency install and PS2SDK source resolution
+#   - official R3Z variant profile: psx + no-ds34 + all storage
+# Note: the upstream ghcr.io/ps2homebrew image is not publicly pullable from
+# this network ("denied"), so the equally official Docker Hub toolchain image
+# is used instead. No toolchain patches are needed with this image.
 set -e
 cd "$(dirname "$0")"
 
-IMAGE="ghcr.io/ps2homebrew/ps2homebrew:main"
+IMAGE="ps2dev/ps2dev:latest"
 
 # pwd -W returns a Windows-style path under Git Bash (MSYS), which docker accepts
 VOL=$(pwd -W 2>/dev/null || pwd)
@@ -17,22 +19,17 @@ VOL=$(pwd -W 2>/dev/null || pwd)
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL="*"
 
-docker run --rm -v "$VOL:/project" -w /project "$IMAGE" bash -exc '
-  # 1. Same dependencies as upstream CI
-  if command -v apk >/dev/null 2>&1; then
-    apk add --no-cache make git zip gcc musl-dev gmp mpfr4 mpc1
-  elif command -v apt-get >/dev/null 2>&1; then
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y make git zip gcc libc6-dev libgmp10 libmpfr6 libmpc3
-  else
-    echo "No supported package manager found." >&2
-    exit 1
-  fi
+docker run --rm --entrypoint /bin/sh -v "$VOL:/project" -w /project "$IMAGE" -c '
+  set -e
+
+  # 1. Build dependencies (same set as upstream CI; fallback covers pkg renames)
+  apk add --no-cache make git zip gcc musl-dev gmp mpfr4 mpc1 \
+    || apk add --no-cache make git zip gcc musl-dev gmp libmpfr libmpc
 
   # Make git work on the mounted volume (ownership differs inside container)
   git config --global --add safe.directory /project
 
-  # 2. Resolve PS2SDK source tree for local IOP module builds (same as CI)
+  # 2. Resolve PS2SDK source tree for local IOP module builds (same logic as CI)
   if [ -n "${PS2SDKSRC:-}" ] && [ -f "$PS2SDKSRC/Defs.make" ] && [ -f "$PS2SDKSRC/iop/Rules.make" ]; then
     echo "Using PS2SDKSRC=$PS2SDKSRC"
   elif [ -n "${PS2SDK:-}" ] && [ -f "$PS2SDK/Defs.make" ] && [ -f "$PS2SDK/iop/Rules.make" ]; then
@@ -49,7 +46,7 @@ docker run --rm -v "$VOL:/project" -w /project "$IMAGE" bash -exc '
   echo "Resolved make flags: $FLAGS"
   make rebuild $FLAGS
 
-  # 4. Same loader layout guard as CI
+  # 4. Loader layout guard (same as CI)
   make -C loader check-layout DEBUG=0
 '
 
