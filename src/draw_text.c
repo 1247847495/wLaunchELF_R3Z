@@ -347,6 +347,95 @@ keep:
 		strcpy(dst, src);
 	return 0;
 }
+//检测并转换"原始 GBK 字节"的文件名：记忆卡/PS1存档/游戏写入的名字不经
+//FatFs 转码, 到达显示层时仍是原始 GBK 字节流(非法 UTF-8), 渲染逐字节回退到
+//CP437 拉丁字体后显示为制表符+希腊字母乱码(如 │Θ╝Λ┬ς└΄░┬)。
+//三遍法：
+//  第0遍 全串扫描——统计合法 3 字节 UTF-8 序列数(cjk3), 并要求存在非法
+//        UTF-8 字节(has_raw)。GBK 字节流也可能碰巧含合法 UTF-8 序列, 故
+//        cjk3 不作否决, 留给第1遍做两种解释的竞争比较；
+//  第1遍 GB2312 贪心配对统计——ASCII 直通, 引导 A1-F7 + 尾 A1-FE 查表。
+//        要求至少 2 对成功、失败不超过成功、且成功数多于 cjk3
+//        (GBK 解释占优才转换, 防"真 UTF-8 名+杂散字节"被误转)；
+//  第2遍 转换——合法对→汉字 UTF-8, 损坏单元原样保留(部分修复优于放弃)。
+//dst 与 src 不可重叠(2 字节输入可能展开为 3 字节 UTF-8)。
+int raw_gbk_to_utf8(char *dst, const char *src)
+{
+	int i, di = 0;
+	int has_raw = 0, cjk3 = 0;
+	int pairs_ok = 0, pairs_bad = 0;
+
+	//第0遍：扫描字节流形态
+	i = 0;
+	while (src[i] != 0) {
+		unsigned int c = (unsigned char)src[i];
+
+		if (c < 0x80) {
+			i++;
+		} else if ((c & 0xE0) == 0xC0 && ((unsigned char)src[i + 1] & 0xC0) == 0x80) {
+			i += 2;  //合法 2 字节 UTF-8
+		} else if ((c & 0xF0) == 0xE0 && ((unsigned char)src[i + 1] & 0xC0) == 0x80 && ((unsigned char)src[i + 2] & 0xC0) == 0x80) {
+			cjk3++;  //合法 3 字节 UTF-8(真 CJK 候选)
+			i += 3;
+		} else if ((c & 0xF8) == 0xF0 && ((unsigned char)src[i + 1] & 0xC0) == 0x80 && ((unsigned char)src[i + 2] & 0xC0) == 0x80 && ((unsigned char)src[i + 3] & 0xC0) == 0x80) {
+			i += 4;  //合法 4 字节 UTF-8
+		} else {
+			has_raw = 1;  //非法 UTF-8 字节(原始 DBCS 的特征)
+			i++;
+		}
+	}
+	if (!has_raw)
+		return 0;  //干净的 UTF-8(或纯 ASCII) → 不处理
+
+	//第一遍：统计 GB2312 配对成功率
+	i = 0;
+	while (src[i] != 0) {
+		unsigned int c = (unsigned char)src[i];
+
+		if (c < 0x80) {
+			i++;
+		} else if (c >= 0xA1 && c <= 0xF7 && (unsigned char)src[i + 1] >= 0xA1 && (unsigned char)src[i + 1] <= 0xFE) {
+			if (gbk_lookup_uni((c << 8) | (unsigned char)src[i + 1]) != 0)
+				pairs_ok++;
+			else
+				pairs_bad++;
+			i += 2;
+		} else {
+			pairs_bad++;
+			i++;
+		}
+	}
+	if (pairs_ok < 2 || pairs_bad > pairs_ok || pairs_ok <= cjk3)
+		return 0;  //GBK 解释不占优 → 是 UTF-8 或垃圾数据
+
+	//第二遍：转换输出(失败单元原样保留)
+	i = 0;
+	while (src[i] != 0) {
+		unsigned int c = (unsigned char)src[i];
+
+		if (c < 0x80) {
+			dst[di++] = (char)c;
+			i++;
+		} else if (c >= 0xA1 && c <= 0xF7 && (unsigned char)src[i + 1] >= 0xA1 && (unsigned char)src[i + 1] <= 0xFE) {
+			u16 uni = gbk_lookup_uni((c << 8) | (unsigned char)src[i + 1]);
+
+			if (uni != 0) {  //汉字 → UTF-8
+				dst[di++] = (char)(0xE0 | (uni >> 12));
+				dst[di++] = (char)(0x80 | ((uni >> 6) & 0x3F));
+				dst[di++] = (char)(0x80 | (uni & 0x3F));
+			} else {  //查表失败 → 原样保留两字节
+				dst[di++] = (char)c;
+				dst[di++] = (char)src[i + 1];
+			}
+			i += 2;
+		} else {  //落单高字节 → 原样保留
+			dst[di++] = (char)c;
+			i++;
+		}
+	}
+	dst[di] = 0;
+	return 1;
+}
 static int text_display_width(const char *s, int spacing)
 {
 	unsigned int c1, c2;

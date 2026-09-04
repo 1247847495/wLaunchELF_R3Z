@@ -1669,15 +1669,20 @@ int getFilePath(char *out, int cnfmode)
 					}
 				}
 				if (name_limit) {  //Do we need to check name length ?
-						int max_width = name_limit;
+							int max_width = name_limit;
 
-						//修复"GBK 伪装 UTF-16"的旧文件名（显示为 ÖÐ 等 Latin-1 乱码）
-						gbk_fake_to_utf8(tmp, tmp);
-						if (files[top + i].stats.AttrFile & sceMcFileAttrSubdir)
-							max_width -= 8;  //For folders, reserve one character for final '/'
-						//按显示宽度截断（UTF-8 字符边界，中文 16px / ASCII 8px，不会切碎中文）
-						utf8_truncate_width(tmp, max_width);
-					}
+							//修复"原始 GBK 字节"的文件名(记忆卡/PS1存档): 非法 UTF-8
+							//字节被逐字节显示为 CP437 符号(制表符/希腊字母乱码),
+							//检测 GB2312 配对并转为 UTF-8(操作仍用原始名字)
+							if (raw_gbk_to_utf8(tmp2, tmp))
+								strcpy(tmp, tmp2);
+							//修复"GBK 伪装 UTF-16"的旧文件名（显示为 ÖÐ 等 Latin-1 乱码）
+							gbk_fake_to_utf8(tmp, tmp);
+							if (files[top + i].stats.AttrFile & sceMcFileAttrSubdir)
+								max_width -= 8;  //For folders, reserve one character for final '/'
+							//按显示宽度截断（UTF-8 字符边界，中文 16px / ASCII 8px，不会切碎中文）
+							utf8_truncate_width(tmp, max_width);
+						}
 
 				if (files[top + i].stats.AttrFile & sceMcFileAttrSubdir && path[0] != 0)
 					strcat(tmp, "/");
