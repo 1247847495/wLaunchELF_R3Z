@@ -28,53 +28,53 @@ static int isGenericUsbRootPath(const char *path)
 
 static const char *getUsbRootDeviceLabel(char unit)
 {
-	static char label[] = "usb0:/";
+	static char label[8];
 
 	if ((unit < '0') || (unit > '9'))
 		return NULL;
 
-	label[3] = unit;
+	sprintf(label, "U盘%c", unit);
 	return label;
 }
 
 static const char *getRootDeviceLabel(const char *name)
 {
 	if (!strcmp(name, "mc0:"))
-		return "mc0:/";
+		return "记忆卡0";
 	if (!strcmp(name, "mc1:"))
-		return "mc1:/";
+		return "记忆卡1";
 	if (!strcmp(name, "mass:"))
-		return "usb:/";
+		return "U盘";
 	if (!strncmp(name, "mass", 4) && name[4] >= '0' && name[4] <= '9' && name[5] == ':' && name[6] == '\0')
 		return getUsbRootDeviceLabel(name[4]);
 	if (!strcmp(name, "usb:"))
-		return "usb:/";
+		return "U盘";
 	if (!strncmp(name, "usb", 3) && name[3] >= '0' && name[3] <= '9' && name[4] == ':' && name[5] == '\0')
 		return getUsbRootDeviceLabel(name[3]);
 #ifdef MMCE
 	if (!strcmp(name, "mmce0:"))
-		return "mmce0:/";
+		return "虚拟记忆卡0";
 	if (!strcmp(name, "mmce1:"))
-		return "mmce1:/";
+		return "虚拟记忆卡1";
 #endif
 #ifdef MX4SIO
 	if (!strcmp(name, "mx4sio:"))
-		return "mx4sio:/";
+		return "MX4SIO卡";
 #endif
 	if (!strcmp(name, "hdd0:"))
-		return "hdd0:/";
+		return "内置apa硬盘";
 	if (!strcmp(name, "hdd1:"))
-		return "hdd1:/";
+		return "内置apa硬盘1";
 #ifdef EXFAT
 	if (!strcmp(name, "ata:"))
-		return "ata0:/";
+		return "内置exfat硬盘";
 	if (!strcmp(name, "ata0:"))
-		return "ata0:/";
+		return "内置exfat硬盘";
 	if (!strcmp(name, "ata1:"))
-		return "ata1:/";
+		return "内置exfat硬盘1";
 #endif
 	if (!strcmp(name, "cdfs:"))
-		return "cdfs:/";
+		return "光盘";
 #ifdef XFROM
 	if (!strcmp(name, "xfrom0:") || !strcmp(name, "xfrom:"))
 		return "xfrom:/";
@@ -89,7 +89,7 @@ static const char *getRootDeviceLabel(const char *name)
 #endif
 #ifdef UDPFS
 	if (!strcmp(name, "udpfs:"))
-		return "udpfs:/";
+		return "网络udpfs";
 #endif
 	if (!strcmp(name, LNG(MISC)))
 		return "MISC/";
