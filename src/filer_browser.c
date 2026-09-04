@@ -1669,13 +1669,15 @@ int getFilePath(char *out, int cnfmode)
 					}
 				}
 				if (name_limit) {  //Do we need to check name length ?
-					int max_width = name_limit;
+						int max_width = name_limit;
 
-					if (files[top + i].stats.AttrFile & sceMcFileAttrSubdir)
-						max_width -= 8;  //For folders, reserve one character for final '/'
-					//按显示宽度截断（UTF-8 字符边界，中文 16px / ASCII 8px，不会切碎中文）
-					utf8_truncate_width(tmp, max_width);
-				}
+						//修复"GBK 伪装 UTF-16"的旧文件名（显示为 ÖÐ 等 Latin-1 乱码）
+						gbk_fake_to_utf8(tmp, tmp);
+						if (files[top + i].stats.AttrFile & sceMcFileAttrSubdir)
+							max_width -= 8;  //For folders, reserve one character for final '/'
+						//按显示宽度截断（UTF-8 字符边界，中文 16px / ASCII 8px，不会切碎中文）
+						utf8_truncate_width(tmp, max_width);
+					}
 
 				if (files[top + i].stats.AttrFile & sceMcFileAttrSubdir && path[0] != 0)
 					strcat(tmp, "/");

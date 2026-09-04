@@ -242,6 +242,66 @@ void utf8_truncate_width(char *s, int max_width)
 		i += adv;
 	}
 }
+
+//检测并修复"GBK 伪装 UTF-16"的文件名：旧工具把 GBK 字节当 UTF-16 写入 LFN，
+//FatFs(UTF-8 模式)读出后显示为 ÖÐ 之类的 Latin-1 串。
+//检测条件：非 ASCII 码点成对出现、全部落在 0xA1-0xFE、且 GB2312 解码全部成功。
+//命中：按 GBK 双字节解码成 Unicode 写入 dst（UTF-8），返回 1。
+//未命中（真 UTF-8 或解码失败）：src 原样拷入 dst，返回 0。
+//dst 可与 src 同缓冲区（输出永远不快于输入，原地转换安全）。
+int gbk_fake_to_utf8(char *dst, const char *src)
+{
+	int di = 0;
+	int pending = 0;  //0=无挂起的 GBK 高字节, 否则为高字节值
+	int converted = 0;
+	int i = 0;
+
+	while (src[i] != 0) {
+		unsigned int c = (unsigned char)src[i];
+
+		if (c < 0x80) {  //ASCII 直通
+			if (pending)
+				if (dst != src) strcpy(dst, src); return 0;  //高字节被 ASCII 打断 → 不是 GBK
+			dst[di++] = (char)c;
+			i++;
+		} else if ((c & 0xE0) == 0xC0) {  //2 字节 UTF-8 → 码点 0x80..0x7FF
+			unsigned int c2 = (unsigned char)src[i + 1];
+			unsigned int cp;
+
+			if ((c2 & 0xC0) != 0x80)
+				if (dst != src) strcpy(dst, src); return 0;  //坏 UTF-8 → 放弃
+			cp = ((c & 0x1F) << 6) | (c2 & 0x3F);
+			i += 2;
+			if (cp >= 0xA1 && cp <= 0xFE) {  //GBK 字节候选
+				if (pending == 0) {
+					pending = cp;
+				} else {
+					u16 uni = gbk_lookup_uni((pending << 8) | cp);
+					if (uni == 0)
+						if (dst != src) strcpy(dst, src); return 0;  //不是合法 GB2312 → 放弃
+					//Unicode → UTF-8（BMP 内，汉字都是 3 字节）
+					dst[di++] = (char)(0xE0 | (uni >> 12));
+					dst[di++] = (char)(0x80 | ((uni >> 6) & 0x3F));
+					dst[di++] = (char)(0x80 | (uni & 0x3F));
+					pending = 0;
+					converted = 1;
+				}
+			} else {
+				if (dst != src) strcpy(dst, src); return 0;  //Latin-1 以外的 2 字节字符 → 不是 GBK 伪装
+			}
+		} else if ((c & 0xF0) == 0xE0) {  //3 字节 UTF-8 → 真 CJK，无需修复
+			if (dst != src) strcpy(dst, src); return 0;
+		} else {
+			if (dst != src) strcpy(dst, src); return 0;  //4 字节序列或其他 → 放弃
+		}
+	}
+	if (pending)
+		if (dst != src) strcpy(dst, src); return 0;  //结尾落单高字节 → 不是 GBK
+	if (!converted)
+		if (dst != src) strcpy(dst, src); return 0;  //纯 ASCII，无转换发生
+	dst[di] = 0;
+	return 1;
+}
 static int text_display_width(const char *s, int spacing)
 {
 	unsigned int c1, c2;
