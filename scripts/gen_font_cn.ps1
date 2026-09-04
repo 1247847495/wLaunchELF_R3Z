@@ -1,24 +1,47 @@
-# Generate src/font_cn.c - 16x16 bitmap font for Chinese UI text
-# Renders each unique CJK char from Lang/CHN.LNG using SimSun 16px (GDI embedded bitmap)
+# Generate src/font_cn.c - 16x16 bitmap font for Chinese UI text AND filenames
+# Covers the FULL GB2312 charset (symbols + 6763 hanzi, via cp936 roundtrip)
+# plus every non-ASCII char used in Lang/CHN.LNG, so Chinese filenames render.
+# Rendering: SimSun 16px GDI embedded bitmaps, ink centered into 16x16 grid.
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 
-$lngPath = 'd:\wLaunchELF_R3Z-master\Lang\CHN.LNG'
-$outPath = 'd:\wLaunchELF_R3Z-master\src\font_cn.c'
+$rootPath = 'd:\wLaunchELF_R3Z-master'
+$outPath = Join-Path $rootPath 'src\font_cn.c'
 
-# 1. Extract unique CJK chars
-$lng = Get-Content $lngPath -Raw -Encoding UTF8
-$set = [System.Collections.Generic.HashSet[char]]::new()
-foreach ($ch in $lng.ToCharArray()) { if ([int]$ch -ge 0x2E80) { $set.Add($ch) | Out-Null } }
-$chars = @($set | Sort-Object)
+# 1. Collect character set: full GB2312 + non-ASCII chars from CHN.LNG
+$enc = [System.Text.Encoding]::GetEncoding(936)
+$seen = [System.Collections.Generic.HashSet[int]]::new()
+$chars = [System.Collections.Generic.List[char]]::new()
+foreach ($hi in 0xA1..0xF7) {
+    foreach ($lo in 0xA1..0xFE) {
+        $bytes = [byte[]]@($hi, $lo)
+        $ch = $enc.GetString($bytes)[0]
+        # roundtrip check: only positions really defined in GB2312/GBK pass
+        $rt = $enc.GetBytes([string]$ch)
+        if ($rt.Length -eq 2 -and $rt[0] -eq $hi -and $rt[1] -eq $lo -and [int]$ch -ge 0xA1) {
+            if ($seen.Add([int]$ch)) { $chars.Add($ch) }
+        }
+    }
+}
+$lng = Get-Content (Join-Path $rootPath 'Lang\CHN.LNG') -Raw -Encoding UTF8
+foreach ($ch in $lng.ToCharArray()) {
+    if ([int]$ch -ge 0xA1) {
+        if ($seen.Add([int]$ch)) { $chars.Add($ch) }
+    }
+}
+$chars.Sort()
 Write-Host "Glyphs to render: $($chars.Count)"
 
+# 2. Render each char (SimSun 16px, single-bit-per-pixel, centered)
 $font = [System.Drawing.Font]::new('SimSun', 16, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
 $flags = [System.Windows.Forms.TextFormatFlags]::HorizontalCenter -bor [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::NoPrefix
 
-$bmp = [System.Drawing.Bitmap]::new(32, 32)
+$bmp = [System.Drawing.Bitmap]::new(32, 32, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::SingleBitPerPixelGridFit
+
+$rect = [System.Drawing.Rectangle]::new(0, 0, 32, 32)
+$pix = New-Object byte[] (32 * 32 * 3)
 
 $entries = New-Object System.Collections.Generic.List[string]
 $preview = New-Object System.Collections.Generic.List[string]
@@ -26,14 +49,19 @@ $emptyCount = 0
 
 foreach ($ch in $chars) {
     $g.Clear([System.Drawing.Color]::White)
-    $rect = [System.Drawing.Rectangle]::new(0, 0, 32, 32)
     [System.Windows.Forms.TextRenderer]::DrawText($g, [string]$ch, $font, $rect, [System.Drawing.Color]::Black, $flags)
+
+    # bulk pixel read via LockBits (24bpp BGR, stride 96)
+    $bd = $bmp.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    [System.Runtime.InteropServices.Marshal]::Copy($bd.Scan0, $pix, 0, $pix.Length)
+    $bmp.UnlockBits($bd)
 
     # find ink bbox
     $minx = 32; $miny = 32; $maxx = -1; $maxy = -1
     for ($y = 0; $y -lt 32; $y++) {
+        $row = $y * 96
         for ($x = 0; $x -lt 32; $x++) {
-            if ($bmp.GetPixel($x, $y).R -lt 128) {
+            if ($pix[$row + $x * 3] -lt 128) {
                 if ($x -lt $minx) { $minx = $x }; if ($x -gt $maxx) { $maxx = $x }
                 if ($y -lt $miny) { $miny = $y }; if ($y -gt $maxy) { $maxy = $y }
             }
@@ -51,7 +79,7 @@ foreach ($ch in $chars) {
                 $srcx = $tx - $dx + $minx
                 $srcy = $ty - $dy + $miny
                 if ($srcx -ge 0 -and $srcx -lt 32 -and $srcy -ge 0 -and $srcy -lt 32) {
-                    if ($bmp.GetPixel($srcx, $srcy).R -lt 128) { $grid[$ty, $tx] = $true }
+                    if ($pix[$srcy * 96 + $srcx * 3] -lt 128) { $grid[$ty, $tx] = $true }
                 }
             }
         }
@@ -86,9 +114,10 @@ $g.Dispose(); $bmp.Dispose(); $font.Dispose()
 $header = @"
 //--------------------------------------------------------------
 //File name:   font_cn.c
-//Description: Built-in 16x16 bitmap glyphs for Chinese (UTF-8) UI
-//             strings. Generated from Lang/CHN.LNG (SimSun 16px).
-//             Sorted by unicode; lookup via binary search.
+//Description: Built-in 16x16 bitmap glyphs for Chinese (UTF-8) text.
+//             Covers the full GB2312 charset plus all non-ASCII chars
+//             used by Lang/CHN.LNG (SimSun 16px). Sorted by unicode;
+//             lookup via binary search.
 //--------------------------------------------------------------
 #include "launchelf.h"
 
@@ -101,6 +130,7 @@ typedef struct FontCnGlyph
 const FontCnGlyph font_cn[] = {
 "@
 $footer = @"
+};
 
 const int font_cn_count = sizeof(font_cn) / sizeof(font_cn[0]);
 

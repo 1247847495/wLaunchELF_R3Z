@@ -170,34 +170,76 @@ static void drawCharCn(const u8 *glyph, int x, int y, u64 colour)
 		}
 	}
 }
+//无字形时的占位框（"□"），避免缺字显示成乱码字节
+static const u8 glyph_box[32] = {
+    0xFF, 0xFF, 0x80, 0x01, 0x80, 0x01, 0x80, 0x01, 0x80, 0x01, 0x80, 0x01, 0x80, 0x01, 0x80, 0x01,
+    0x80, 0x01, 0x80, 0x01, 0x80, 0x01, 0x80, 0x01, 0x80, 0x01, 0x80, 0x01, 0x80, 0x01, 0xFF, 0xFF};
+
+//解码 s 处的一个 UTF-8 字符（2 或 3 字节序列）
+//返回字形位图指针；*adv=消耗字节数, *width=显示宽度, *is_cjk=按中文处理
+//返回 NULL 时 *adv=1/*width=8，调用方按普通单字节字符处理
+static const u8 *utf8_next(const char *s, int *adv, int *width, int *is_cjk)
+{
+	unsigned int c1 = (unsigned char)s[0];
+	unsigned int code;
+	const u8 *g;
+
+	*adv = 1;
+	*width = 8;
+	*is_cjk = 0;
+	if ((c1 & 0xE0) == 0xC0) {  //2 字节序列 (U+0080..U+07FF)
+		unsigned int c2 = (unsigned char)s[1];
+		if ((c2 & 0xC0) == 0x80) {
+			code = ((c1 & 0x1F) << 6) | (c2 & 0x3F);
+			g = font_cn_lookup(code);
+			if (g != NULL) {
+				*adv = 2;
+				*width = 16;
+				*is_cjk = 1;
+				return g;
+			}
+		}
+		return NULL;
+	}
+	if ((c1 & 0xF0) == 0xE0) {  //3 字节序列 (U+0800..U+FFFF)
+		unsigned int u2 = (unsigned char)s[1];
+		unsigned int u3 = (unsigned char)s[2];
+		if (u2 && u3 && ((u2 & 0xC0) == 0x80) && ((u3 & 0xC0) == 0x80)) {
+			code = ((c1 & 0x0F) << 12) | ((u2 & 0x3F) << 6) | (u3 & 0x3F);
+			g = font_cn_lookup(code);
+			if (g != NULL) {
+				*adv = 3;
+				*width = 16;
+				*is_cjk = 1;
+				return g;
+			}
+			if (code >= 0x2E80) {  //CJK 区缺字形 → 占位框
+				*adv = 3;
+				*width = 16;
+				*is_cjk = 1;
+				return glyph_box;
+			}
+		}
+	}
+	return NULL;
+}
 //按显示宽度截断 UTF-8 字符串（在字符边界切割，不会产生乱码字节）
 //中文字符宽 16px、ASCII 宽 8px；截断时末尾以 '~' 标记，max_width 需含 '~' 的宽度
 void utf8_truncate_width(char *s, int max_width)
 {
 	int i = 0, w = 0;
-	unsigned int c1;
 
-	while ((c1 = (unsigned char)s[i]) != 0) {
-		int cw = 8, clen = 1;
+	while (s[i] != 0) {
+		int adv, cw, is_cjk;
 
-		if ((c1 & 0xF0) == 0xE0) {  //潜在 3 字节 UTF-8 序列（CJK 字形）
-			unsigned int u2 = (unsigned char)s[i + 1];
-			unsigned int u3 = (unsigned char)s[i + 2];
-			if (u2 && u3 && ((u2 & 0xC0) == 0x80) && ((u3 & 0xC0) == 0x80)) {
-				unsigned int code = ((c1 & 0x0F) << 12) | ((u2 & 0x3F) << 6) | (u3 & 0x3F);
-				if (font_cn_lookup(code) != NULL) {
-					cw = 16;
-					clen = 3;
-				}
-			}
-		}
-		if (w + cw > max_width - 8) {  //为 '~' 预留 8px
+		utf8_next(s + i, &adv, &cw, &is_cjk);  //无字形时 adv=1/cw=8
+		if (w + cw > max_width - 8) {          //为 '~' 预留 8px
 			s[i] = '~';
 			s[i + 1] = 0;
 			return;
 		}
 		w += cw;
-		i += clen;
+		i += adv;
 	}
 }
 static int text_display_width(const char *s, int spacing)
@@ -205,19 +247,15 @@ static int text_display_width(const char *s, int spacing)
 	unsigned int c1, c2;
 	int i = 0, w = 0;
 
-	while ((c1 = (unsigned char)s[i++]) != 0) {
-		if ((c1 & 0xF0) == 0xE0) {  //Potential 3-byte UTF-8 sequence (CJK glyph)
-			unsigned int u2 = (unsigned char)s[i];
-			unsigned int u3 = (unsigned char)s[i + 1];
-			if (u2 && u3 && ((u2 & 0xC0) == 0x80) && ((u3 & 0xC0) == 0x80)) {
-				unsigned int code = ((c1 & 0x0F) << 12) | ((u2 & 0x3F) << 6) | (u3 & 0x3F);
-				if (font_cn_lookup(code) != NULL) {
-					i += 2;
-					w += 16;
-					continue;
-				}
-			}
+	while ((c1 = (unsigned char)s[i]) != 0) {
+		int adv, cw, is_cjk;
+
+		if (utf8_next(s + i, &adv, &cw, &is_cjk) != NULL) {  //中文字符(或占位框)
+			w += cw;
+			i += adv;
+			continue;
 		}
+		i++;  //消耗单字节字符
 		if (c1 != 0xFF) {  // Normal character
 			w += spacing;
 			continue;
@@ -248,24 +286,20 @@ int printXY(const char *s, int x, int y, u64 colour, int draw, int space)
 	}
 
 	i = 0;
-	while ((c1 = (unsigned char)s[i++]) != 0) {
-		if ((c1 & 0xF0) == 0xE0) {  //Potential 3-byte UTF-8 sequence (CJK glyph)
-			unsigned int u2 = (unsigned char)s[i];
-			unsigned int u3 = (unsigned char)s[i + 1];
-			if (u2 && u3 && ((u2 & 0xC0) == 0x80) && ((u3 & 0xC0) == 0x80)) {
-				unsigned int code = ((c1 & 0x0F) << 12) | ((u2 & 0x3F) << 6) | (u3 & 0x3F);
-				const u8 *glyph = font_cn_lookup(code);
-				if (glyph != NULL) {
-					i += 2;
-					if (draw)
-						drawCharCn(glyph, x, y, colour);
-					x += 16;
-					if (x > SCREEN_WIDTH - SCREEN_MARGIN - FONT_WIDTH)
-						break;
-					continue;
-				}
-			}  //else fall through, treating the lead byte as a single character
+	while ((c1 = (unsigned char)s[i]) != 0) {
+		int adv, cw, is_cjk;
+		const u8 *glyph = utf8_next(s + i, &adv, &cw, &is_cjk);
+
+		if (glyph != NULL) {  //中文字符(或占位框)
+			if (draw)
+				drawCharCn(glyph, x, y, colour);
+			x += cw;
+			i += adv;
+			if (x > SCREEN_WIDTH - SCREEN_MARGIN - FONT_WIDTH)
+				break;
+			continue;
 		}
+		i++;  //消耗单字节字符
 		if (c1 != 0xFF) {  // Normal character
 			if (draw)
 				drawChar(c1, x, y, colour);
