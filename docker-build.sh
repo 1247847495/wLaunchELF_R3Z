@@ -42,13 +42,29 @@ docker run --rm --entrypoint /bin/sh -v "$VOL:/project" -w /project "$IMAGE" -c 
 
   # FatFs: switch LFN API encoding to UTF-8 so Chinese filenames on
   # USB/MX4SIO/ATA(exFAT) survive the IOP->EE handoff (default OEM CP mangles
-  # them to "?"). Pre-seed the dependency so the later sed patch is kept.
+  # them to "?"). Then BUILD the patched bdmfs_fatfs module and vendor it
+  # into iop/__precompiled/ — embed.make prefers that copy, so the main make
+  # (and the GitHub CI) always embed this UTF-8 LFN build instead of the
+  # prebuilt module shipped with the toolchain image.
   git clone --depth 1 -b iop-r0.16 https://github.com/fjtrujy/FatFs.git \
       /tmp/ps2sdk-src/common/external_deps/fatfs
   sed -i "s/^#define[[:space:]]*FF_LFN_UNICODE[[:space:]].*/#define FF_LFN_UNICODE 2/" \
       /tmp/ps2sdk-src/common/external_deps/fatfs/source/include/ffconf.h
-  grep -n "^#define FF_LFN_UNICODE" \
+  grep "^#define FF_LFN_UNICODE 2" \
       /tmp/ps2sdk-src/common/external_deps/fatfs/source/include/ffconf.h
+  mkdir -p /tmp/fatfs-out /tmp/fatfs-obj
+  make -C /tmp/ps2sdk-src/iop/fs/bdmfs_fatfs \
+      PS2SDKSRC=/tmp/ps2sdk-src PS2SDK=/tmp/ps2sdk-src \
+      IOP_BIN_DIR=/tmp/fatfs-out/ IOP_OBJS_DIR=/tmp/fatfs-obj/ \
+      IOP_BIN=bdmfs_fatfs.irx
+  # this ps2sdk Makefile drops the IRX in the module dir, not IOP_BIN_DIR
+  if [ -f /tmp/fatfs-out/bdmfs_fatfs.irx ]; then
+    cp /tmp/fatfs-out/bdmfs_fatfs.irx iop/__precompiled/bdmfs_fatfs.irx
+  else
+    cp /tmp/ps2sdk-src/iop/fs/bdmfs_fatfs/bdmfs_fatfs.irx iop/__precompiled/bdmfs_fatfs.irx
+  fi
+  echo "=== Vendored UTF-8 LFN bdmfs_fatfs.irx ==="
+  ls -la iop/__precompiled/bdmfs_fatfs.irx
 
   # 3. Build with the official R3Z profile flags (psx + no-ds34 + all)
   chmod +x scripts/ci/resolve_make_args.sh

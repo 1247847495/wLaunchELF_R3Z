@@ -195,11 +195,13 @@ endif
 ifneq ($(wildcard $(PS2SDK)/iop/irx/bdm.irx),)
 BDM_SOURCE := $(PS2SDK)/iop/irx/bdm.irx
 endif
-ifneq ($(wildcard $(PS2SDK)/iop/irx/bdmfs_fatfs.irx),)
-BDMFS_FATFS_SOURCE := $(PS2SDK)/iop/irx/bdmfs_fatfs.irx
-endif
 ifneq ($(wildcard $(PS2SDK)/iop/irx/usbmass_bd.irx),)
 USBMASS_BD_SOURCE := $(PS2SDK)/iop/irx/usbmass_bd.irx
+endif
+# bdmfs_fatfs: the vendored iop/__precompiled copy is the UTF-8 LFN build
+# (Chinese filename support) and takes priority over any prebuilt SDK module.
+ifneq ($(wildcard iop/__precompiled/bdmfs_fatfs.irx),)
+BDMFS_FATFS_SOURCE := iop/__precompiled/bdmfs_fatfs.irx
 endif
 
 ifeq ($(strip $(BDM_SOURCE)),)
