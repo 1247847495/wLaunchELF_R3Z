@@ -33,7 +33,7 @@ Drivers load on demand for maximum compatibility and initial boot speed.
 - Applies deckard disc patches
 - X/0 applied per region if no config file is found so O is only default for Japan
 - Keyboard layout choices: QWERTY, DVORAK, AZERTY, QWERTZ, ABNT, ABC
-- Language built: English, Spanish, Italian, French, German, Polish, Portuguese, Portuguese Brazilian, Hungarian
+- Language built: Chinese (Simplified), English, Spanish, Italian, French, German, Polish, Portuguese, Portuguese Brazilian, Hungarian
 - All config options exposed in gui
 - HDD/ATA drives hidden for deckard ps2 (SCPH-75K+)
 - Xfrom/dvr_hdd0 hidden from non-PSX consoles
@@ -51,6 +51,7 @@ Drivers load on demand for maximum compatibility and initial boot speed.
 - warnings when modifying/deleting exploit folders on PS2/PSX
 - Support for PS3/PS4 Dualshocks thanks to Alex Parrado (DS34 build)
 - [SMB share access](#smb-share-access) (`smb:/`) with credentials from `SMB.CNF`, editable in the Network Settings GUI
+- [Simplified Chinese localization](#simplified-chinese-localization): full GB2312 font rendering, localized UI and device names, filename encoding auto-detection, and game save title translation
 
 ### LaunchELF with Args
 
@@ -194,6 +195,30 @@ The PS2 side network settings (local IP, netmask, gateway) come from the standar
 - OPL-style `smb.cnf` files also load: unknown keys are ignored and `smbServer_IP`/`smbShare`/`smbUsername`/`smbPassword`/`smbPasswordType` aliases are accepted.
 - The share must be SMB1-compatible (most NAS/routers keep SMB1 support; Windows may need the SMB 1.0/CIFS feature enabled).
 - Chinese/UTF-8 filenames in the share are displayed losslessly.
+
+</details>
+
+### Simplified Chinese localization
+
+<details>
+
+<summary>Simplified Chinese localization</summary>
+
+This fork ships a full Simplified Chinese localization (by anyi). Chinese is the default language; others are still selectable in the configuration GUI.
+
+- **Full font rendering**: built-in GB2312 font covering 8,178 characters, so every menu item, message, filename and user-editable text renders correctly on real hardware.
+- **Localized UI**: all menus, dialogs, virtual keyboard and settings screens are translated; device labels are localized (e.g. Memory Card, Network SMB share).
+- **Filename encoding auto-detection**: UTF-8, GBK and raw GBK byte filenames are detected and converted automatically, with marquee scrolling for long Chinese names that exceed the screen width.
+- **Game save title translation**: when browsing memory cards in the `Title + Details` display mode (L1 cycles display modes), save titles are shown in Chinese using a built-in table of 7,444 product codes mapped to Simplified Chinese game titles. Titles are matched from the save folder/file name prefix (e.g. `SLUS_209.46`), case-insensitive.
+- **GAMETITLES.TXT user translations**: entries missing from the built-in table can be translated by hand. A template `GAMETITLES.TXT` is generated automatically on the browsed memory card (`mc?:/SYS-CONF/`) the first time you enter the mode: known codes come pre-filled with their Chinese title, unknown ones are left empty for you to fill in. The file is UTF-8/ANSI(GBK)/Unicode(UTF-16) compatible; user translations take priority over the built-in table and existing edits are never overwritten.
+
+Example `GAMETITLES.TXT`:
+
+```ini
+SLUS-20946=GTA: San Andreas
+SCAJ-20007=
+SCPS-15007=
+```
 
 </details>
 
