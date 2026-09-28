@@ -5,7 +5,9 @@ MMCE ?= 1
 DS34 ?= 0
 TMANIP ?= 1
 ETH ?= 0
-UDPFS ?= 1
+SMB ?= 1
+
+
 EXFAT ?= 1
 DVRP ?= 1
 IOP_RESET ?= 1
@@ -20,7 +22,7 @@ LCDVD ?= LATEST#or LEGACY
 # ----------------------------- #
 .SILENT:
 
-BIN_NAME = $(HAS_EXFAT)$(HAS_DS34)$(HAS_ETH)$(HAS_UDPFS)$(HAS_MX4SIO)$(HAS_MMCE)$(HAS_DVRP)$(HAS_XFROM)$(HAS_EESIO)$(HAS_UDPTTY)$(HAS_PPCTTY)$(HAS_IOP_RESET)
+BIN_NAME = $(HAS_EXFAT)$(HAS_DS34)$(HAS_ETH)$(HAS_UDPFS)$(HAS_SMB)$(HAS_MX4SIO)$(HAS_MMCE)$(HAS_DVRP)$(HAS_XFROM)$(HAS_EESIO)$(HAS_UDPTTY)$(HAS_PPCTTY)$(HAS_IOP_RESET)
 ifeq ($(DEBUG), 0)
   EE_BIN = UNC-BOOT$(BIN_NAME).ELF
   EE_BIN_PKD = BOOT$(BIN_NAME).ELF
@@ -74,6 +76,13 @@ ifeq ($(strip $(BIN2S_TOOL)),)
 $(error bin2s not found. Install PS2SDK tools, or set BIN2S_TOOL=/full/path/to/bin2s)
 endif
 BIN2S = @$(BIN2S_TOOL)
+
+# Locate ps2-packer, preferring the PS2DEV install (its stub files live
+#in $(PS2DEV)/share/ps2-packer/, which a bare PATH lookup can miss).
+PS2_PACKER ?= ps2-packer
+ifneq ($(wildcard $(PS2DEV)/bin/ps2-packer),)
+PS2_PACKER := $(PS2DEV)/bin/ps2-packer
+endif
 
 ifeq ($(LCDVD),LEGACY)
   $(info -- Building with legacy libcdvd)
@@ -168,12 +177,15 @@ ifeq ($(IOP_RESET),0)
     HAS_IOP_RESET = -NO_IOP_RESET
 endif
 
-ifeq ($(ETH),1)
-    EE_OBJS += ps2smap_irx.o ps2ftpd_irx.o ps2host_irx.o ps2netfs_irx.o ps2ip_irx.o
-    EE_CFLAGS += -DETH
-ifeq ($(UDPFS),1)
-    HAS_ETH = -ETH
-endif
+#SMB share browsing via the SNEsticleAurora module set (patched smbman
+#plus the classic pre-netman stack). See src/smb.c and embed.make.
+#SMB and UDPFS each bind SMAP with their own stack, so they cannot be
+#loaded into the same IOP session; when both are enabled the app
+#switches between them at runtime via an IOP reset (switchNetworkStack).
+ifeq ($(SMB),1)
+    EE_OBJS += smb.o smbman_irx.o smb_ps2ip_irx.o smb_smap_irx.o smb_ps2ips_irx.o
+    EE_CFLAGS += -DSMB
+    HAS_SMB = -SMB
 endif
 
 ifeq ($(UDPFS),1)
@@ -184,7 +196,9 @@ endif
 
 ifneq ($(ETH),1)
 ifneq ($(UDPFS),1)
+ifneq ($(SMB),1)
     HAS_ETH = -NO_NETWORK
+endif
 endif
 endif
 
@@ -314,7 +328,7 @@ info:
 .PHONY: all all-ds34-off all-ds34-on all-ds34-variants all-no-psx-no-ds34 all-no-psx-ds34 all-psx-no-ds34 all-psx-ds34 all-ci-variants ci-build-profile ci-build-storage-matrix stale-audit clean-ds34-variants clean-ci-variants run reset clean rebuild isoclean iso
 
 $(EE_BIN_PKD): $(EE_BIN)
-	ps2-packer $< $@
+	$(PS2_PACKER) $< $@
 ifeq ($(IOP_RESET),0)
 	@echo "-------------{COMPILATION PERFORMED WITHOUT IOP RESET}-------------"
 endif

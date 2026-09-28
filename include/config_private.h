@@ -8,23 +8,23 @@ enum {
 	DEF_TIMEOUT = 10,
 	DEF_HIDE_PATHS = TRUE,
 #ifdef CUSTOM_COLORS
-	DEF_COLOR1 = GS_SETREG_RGBA(0, 0, 0, 0),  //Backgr
+	DEF_COLOR1 = GS_SETREG_RGBA(0xb8, 0xb8, 0xb8, 0),  //Backgr (银灰白)
 	DEF_COLOR2 = GS_SETREG_RGBA(0x35, 0x35, 0x35, 0),  //Frame
-	DEF_COLOR3 = GS_SETREG_RGBA(0x6c, 0xce, 0xff, 0),  //Select
-	DEF_COLOR4 = GS_SETREG_RGBA(0xa0, 0xa0, 0xa0, 0),  //Text
-	DEF_COLOR5 = GS_SETREG_RGBA(0xff, 0xcc, 0x99, 0),  //Folders
+	DEF_COLOR3 = GS_SETREG_RGBA(0x00, 0x58, 0xa6, 0),  //Select
+	DEF_COLOR4 = GS_SETREG_RGBA(0x21, 0x21, 0x21, 0),  //Text
+	DEF_COLOR5 = GS_SETREG_RGBA(0xb8, 0x5a, 0x00, 0),  //Folders
 	DEF_COLOR6 = GS_SETREG_RGBA(0x48, 0x6a, 0, 0),     //ELFs
 	DEF_COLOR7 = GS_SETREG_RGBA(0x43, 0x3a, 0x7c, 0),  //Unknown
-	DEF_COLOR8 = GS_SETREG_RGBA(0xd6, 0xc4, 0x28, 0),  //TextEditor
+	DEF_COLOR8 = GS_SETREG_RGBA(0x8a, 0x74, 0x00, 0),  //TextEditor
 #else
-	DEF_COLOR1 = GS_SETREG_RGBA(0, 0, 0, 0),              //Backgr
-	DEF_COLOR2 = GS_SETREG_RGBA(0x35, 0x35, 0x35, 0),     //Frame
-	DEF_COLOR3 = GS_SETREG_RGBA(0x6c, 0xce, 0xff, 0),     //Select
-	DEF_COLOR4 = GS_SETREG_RGBA(0xa0, 0xa0, 0xa0, 0),     //Text
-	DEF_COLOR5 = GS_SETREG_RGBA(0xff, 0xcc, 0x99, 0),     //Folders
-	DEF_COLOR6 = GS_SETREG_RGBA(0x48, 0x6a, 0, 0),        //ELFs
-	DEF_COLOR7 = GS_SETREG_RGBA(0x43, 0x3a, 0x7c, 0),     //Unknown
-	DEF_COLOR8 = GS_SETREG_RGBA(0xd6, 0xc4, 0x28, 0),     //TextEditor
+	DEF_COLOR1 = GS_SETREG_RGBA(0xb8, 0xb8, 0xb8, 0),  //Backgr (银灰白)
+	DEF_COLOR2 = GS_SETREG_RGBA(0x35, 0x35, 0x35, 0),  //Frame
+	DEF_COLOR3 = GS_SETREG_RGBA(0x00, 0x58, 0xa6, 0),  //Select
+	DEF_COLOR4 = GS_SETREG_RGBA(0x21, 0x21, 0x21, 0),  //Text
+	DEF_COLOR5 = GS_SETREG_RGBA(0xb8, 0x5a, 0x00, 0),  //Folders
+	DEF_COLOR6 = GS_SETREG_RGBA(0x48, 0x6a, 0, 0),     //ELFs
+	DEF_COLOR7 = GS_SETREG_RGBA(0x43, 0x3a, 0x7c, 0),  //Unknown
+	DEF_COLOR8 = GS_SETREG_RGBA(0x8a, 0x74, 0x00, 0),  //TextEditor
 #endif //CUSTOM_COLORS
 	DEF_MENU_FRAME = TRUE,
 	DEF_SWAPKEYS = FALSE,
@@ -68,6 +68,7 @@ int configSaveTargetPrompt(const char *save_override_path, const char *save_cwd_
 int CheckMC(void);
 
 void Config_Screen(void);
+void ThemeSelectStartup(void);
 void Config_Startup(void);
 void Config_Network(void);
 void Config_Advanced(void);

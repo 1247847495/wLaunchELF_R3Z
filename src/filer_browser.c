@@ -91,6 +91,10 @@ static const char *getRootDeviceLabel(const char *name)
 	if (!strcmp(name, "udpfs:"))
 		return "网络udpfs";
 #endif
+#ifdef SMB
+	if (!strcmp(name, "smb:"))
+		return "网络SMB共享";
+#endif
 	if (!strcmp(name, LNG(MISC)))
 		return "MISC/";
 
@@ -963,12 +967,505 @@ static void skipRootSpacerSelection(const char *path, FILEINFO *files, int nfile
 	}
 }
 
+//------ 记忆卡存档中文标题对照表(L1"标题+详细信息"显示模式) ------
+//存档目录名通常为"B+区码+光盘ID"格式(如美版 BASLUS-20946xxx = BA + SLUS-20946,
+//欧版 BESLES-52541xxx、日版 BISLPM-65401xxx 等)。查找流程:先从目录名中提取
+//形如"4字母-数字"的光盘产品代码,再在按代码ASCII序排列的对照表中二分查找,
+//命中即显示对应中文标题,未命中则回退显示存档自带的日文/英文标题。
+//表内容(含日/美/欧各区ID,共7千余条)由 make_game_titles_cn.ps1 从游戏ID数据库生成,勿手改。
+static const struct cnTitleEntry {
+	const char *code;   //游戏光盘产品代码,如 "SLUS-20946"(10字符定长)
+	const char *title;  //UTF-8 简体中文标题
+} cnTitleTable[] = {
+#include "game_titles_cn.h"
+};
+
+#define CN_TABLE_COUNT (sizeof(cnTitleTable) / sizeof(cnTitleTable[0]))
+
+//尝试从 s[pos] 起提取光盘产品代码:4位字母数字(至少1个字母,兼容 CF00 等特殊前缀)
+//+ 分隔符('-'/'_'/'.') + 1~5位数字(数字组间允许'.'/'_',如 SLUS_209.46 → SLUS-20946)。
+//成功时把规范形式(如 "SLUS-20946")写入 code 并返回消耗的字符数;失败返回0。
+//除存档目录名(如 BASLUS-20946xxx)外,也兼容 ISO 文件名(SLUS_209.46.iso)等写法。
+static int extractProductCode(const char *s, int pos, char *code)
+{
+	int j, k, nd, letters = 0;
+	char c;
+
+	for (j = 0; j < 4; j++) {  //4位前缀:字母数字混合
+		c = s[pos + j];
+		if (c >= 'a' && c <= 'z') {
+			c -= 'a' - 'A';
+			letters++;
+		} else if (c >= 'A' && c <= 'Z')
+			letters++;
+		else if (c < '0' || c > '9')
+			return 0;
+		code[j] = c;
+	}
+	if (letters == 0)
+		return 0;  //纯数字前缀(日期/版本号等)不是产品代码
+	c = s[pos + 4];
+	if (c != '-' && c != '_' && c != '.')
+		return 0;  //前缀后必须紧跟分隔符
+	code[4] = '-';
+	for (nd = 0, k = 5; nd < 5; k++) {
+		c = s[pos + k];
+		if (c >= '0' && c <= '9') {
+			code[5 + nd] = c;
+			nd++;
+		} else if ((c == '.' || c == '_') && nd > 0 && s[pos + k + 1] >= '0' && s[pos + k + 1] <= '9')
+			continue;  //跳过数字组间的分隔符(如 209.46)
+		else
+			break;
+	}
+	if (nd == 0)
+		return 0;
+	code[5 + nd] = '\0';
+	return k;
+}
+
+//------ 用户自定义翻译文件 GAMETITLES.TXT ------
+//自动生成与读取都跟随当前浏览的记忆卡:浏览mc0就用mc0:/SYS-CONF/下的文件,
+//浏览mc1就用mc1:/SYS-CONF/下的文件,与从哪里启动无关;两张卡都没有时才回退
+//到ELF所在目录。格式为每行"产品代码=简体中文标题"(#或;开头为注释行),
+//GBK/UTF-8/UTF-16编码均可。用户译名优先于内置对照表,可补充未收录的游戏或
+//修正内置译名。首次使用时自动加载,换卡浏览时按该卡重新加载(同一张卡上
+//修改后需重启程序生效)。
+#define USER_TITLE_MAX       2048            //最多自定义条目数
+#define USER_TITLE_POOL_SZ   (100 * 1024)    //译名存储池
+#define USER_TITLE_TEXT_MAX  96              //单条译名最大字节数(48个汉字)
+#define USER_TITLE_FILE_MAX  (200 * 1024)    //文件读取上限
+#define USER_TITLE_FILE      "GAMETITLES.TXT"
+
+static struct cnTitleEntry userTitleTable[USER_TITLE_MAX];
+static int userTitleCount = 0;
+static int userTitleState = 0;       //0=未加载,1=已尝试(无论成败)
+static int userTitleLoadedPort = -2; //已加载来源:0/1=卡槽,-1=非mc场景回退加载
+static char userTitlePool[USER_TITLE_POOL_SZ];
+static int userTitlePoolUsed = 0;
+
+static char *userTitleAlloc(int n)
+{
+	char *p;
+
+	if (userTitlePoolUsed + n > USER_TITLE_POOL_SZ)
+		return NULL;
+	p = userTitlePool + userTitlePoolUsed;
+	userTitlePoolUsed += n;
+	return p;
+}
+
+static int userTitleCmp(const void *a, const void *b)
+{
+	return strcmp(((const struct cnTitleEntry *)a)->code,
+	              ((const struct cnTitleEntry *)b)->code);
+}
+
+static char *cnTrim(char *s)
+{
+	char *e;
+
+	while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n')
+		s++;
+	e = s + strlen(s);
+	while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n'))
+		*--e = '\0';
+	return s;
+}
+
+//把带BOM的UTF-16文本转为UTF-8(仅BMP,代理区以'?'占位);返回输出长度
+static int utf16TextToUtf8(char *out, const unsigned char *src, int len)
+{
+	int be = (src[0] == 0xFE && src[1] == 0xFF);
+	int i = 2, di = 0;  //跳过BOM
+
+	while (i + 1 < len) {
+		unsigned int u = be ? ((unsigned int)src[i] << 8) | src[i + 1]
+		                    : ((unsigned int)src[i + 1] << 8) | src[i];
+
+		i += 2;
+		if (u == 0)
+			break;
+		if (u >= 0xD800 && u <= 0xDFFF)
+			u = '?';
+		if (u < 0x80) {
+			out[di++] = (char)u;
+		} else if (u < 0x800) {
+			out[di++] = (char)(0xC0 | (u >> 6));
+			out[di++] = (char)(0x80 | (u & 0x3F));
+		} else {
+			out[di++] = (char)(0xE0 | (u >> 12));
+			out[di++] = (char)(0x80 | ((u >> 6) & 0x3F));
+			out[di++] = (char)(0x80 | (u & 0x3F));
+		}
+	}
+	out[di] = '\0';
+	return di;
+}
+
+//加载用户自定义翻译表;mc_port为当前浏览的记忆卡槽位(0/1),-1表示非mc浏览场景。
+//换卡浏览时以浏览卡为最优先重新加载,保证译名与该卡上的文件一致。
+static void loadUserTitles(int mc_port)
+{
+	char path[MAX_PATH];
+	char line[256], code[11], conv[512];
+	char *text, *ln, *eq, *title, *freebuf, *cp, *tp;
+	unsigned char *filebuf;
+	int fd, len = 0, flen, pos, linelen, i, adv = 0, tl, cl, found, w;
+	size_t dir_len;
+	int port_ix, ports_to_try[2];
+
+	userTitleState = 1;  //已尝试(无论成败)
+	userTitleCount = 0;
+	userTitlePoolUsed = 0;  //重新加载时从存储池头部重新分配
+	userTitleLoadedPort = mc_port;
+
+	filebuf = malloc(USER_TITLE_FILE_MAX + 1);
+	if (filebuf == NULL)
+		return;
+
+	//搜索顺序与自动生成位置一致(不管从哪里启动):
+	//当前浏览的记忆卡(若已知) → 另一张卡 → ELF所在目录(最后回退)
+	if (mc_port >= 0 && mc_port <= 1) {
+		ports_to_try[0] = mc_port;
+		ports_to_try[1] = mc_port ^ 1;
+	} else {
+		ports_to_try[0] = 0;
+		ports_to_try[1] = 1;
+	}
+	for (port_ix = 0; port_ix < 2 && len <= 0; port_ix++) {
+		snprintf(path, sizeof(path), "mc%d:/SYS-CONF/%s", ports_to_try[port_ix], USER_TITLE_FILE);
+		fd = genOpen(path, FIO_O_RDONLY);
+		if (fd >= 0) {
+			len = genRead(fd, filebuf, USER_TITLE_FILE_MAX);
+			genClose(fd);
+		}
+	}
+	if (len <= 0) {
+		dir_len = strnlen(LaunchElfDir, sizeof(path));
+		if (dir_len < sizeof(path) && (dir_len + sizeof(USER_TITLE_FILE)) <= sizeof(path)) {
+			memcpy(path, LaunchElfDir, dir_len);
+			memcpy(path + dir_len, USER_TITLE_FILE, sizeof(USER_TITLE_FILE));
+			fd = genOpen(path, FIO_O_RDONLY);
+			if (fd >= 0) {
+				len = genRead(fd, filebuf, USER_TITLE_FILE_MAX);
+				genClose(fd);
+			}
+		}
+	}
+	if (len <= 0) {
+		free(filebuf);
+		return;  //未找到自定义文件,只用内置表
+	}
+	filebuf[len] = '\0';
+	flen = len;
+	freebuf = text = (char *)filebuf;
+
+	//编码处理:UTF-16(带BOM)→UTF-8;UTF-8 BOM→跳过;
+	//其余(GBK 或 UTF-8)在下面逐行由 raw_gbk_to_utf8 自动判别转换
+	if (flen >= 2 && ((filebuf[0] == 0xFF && filebuf[1] == 0xFE) || (filebuf[0] == 0xFE && filebuf[1] == 0xFF))) {
+		char *u8 = malloc(flen * 3 / 2 + 8);
+
+		if (u8 != NULL) {
+			flen = utf16TextToUtf8(u8, filebuf, flen);
+			free(filebuf);
+			freebuf = text = u8;
+		} else {  //内存不足:跳过BOM按原样解析(内容无法命中,无害)
+			text += 2;
+			flen -= 2;
+		}
+	} else if (flen >= 3 && filebuf[0] == 0xEF && filebuf[1] == 0xBB && filebuf[2] == 0xBF) {
+		text += 3;  //跳过UTF-8 BOM
+		flen -= 3;
+	}
+
+	//逐行解析:"产品代码=中文标题"
+	pos = 0;
+	while (pos < flen && userTitleCount < USER_TITLE_MAX) {
+		linelen = 0;
+		while (pos < flen && text[pos] != '\n' && linelen < (int)sizeof(line) - 1)
+			line[linelen++] = text[pos++];
+		line[linelen] = '\0';
+		if (pos < flen && text[pos] == '\n')
+			pos++;
+
+		ln = cnTrim(line);
+		if (!ln[0] || ln[0] == '#' || ln[0] == ';')
+			continue;  //空行与注释行
+		if (ln[0] == '/' && ln[1] == '/')
+			continue;
+		eq = strchr(ln, '=');
+		if (eq == NULL)
+			continue;  //忽略无法解析的行
+		*eq = '\0';
+		title = cnTrim(eq + 1);
+		ln = cnTrim(ln);
+		//译名可留空(待补翻):空条目也入表,防止自动生成时被当成新代码重复追加
+
+		//'='左侧提取产品代码(支持 SLUS-20946 / SLUS_209.46 / BASLUS-20946 等写法)
+		found = 0;
+		for (i = 0; ln[i] != '\0'; i += (adv > 0 ? adv : 1)) {
+			adv = extractProductCode(ln, i, code);
+			if (adv > 0) {
+				found = 1;
+				break;
+			}
+		}
+		if (!found)
+			continue;
+
+		//译名编码自动判别:GBK→UTF-8(返回1);已是UTF-8/ASCII则原样使用
+		if (raw_gbk_to_utf8(conv, title))
+			title = conv;
+		tl = strlen(title);
+		if (tl > USER_TITLE_TEXT_MAX) {  //超长截断(退到UTF-8字符边界)
+			tl = USER_TITLE_TEXT_MAX;
+			while (tl > 0 && ((unsigned char)title[tl] & 0xC0) == 0x80)
+				tl--;  //退过被截断的续字节
+			if (tl > 0 && (unsigned char)title[tl - 1] >= 0xC0)
+				tl--;  //被截断的多字节首字节也退掉
+		}
+
+		cl = strlen(code);
+		cp = userTitleAlloc(cl + 1);
+		tp = userTitleAlloc(tl + 1);
+		if (cp == NULL || tp == NULL)
+			break;  //存储池满,停止解析
+		memcpy(cp, code, cl + 1);
+		memcpy(tp, title, tl);
+		tp[tl] = '\0';
+		userTitleTable[userTitleCount].code = cp;
+		userTitleTable[userTitleCount].title = tp;
+		userTitleCount++;
+	}
+	free(freebuf);
+
+	//按代码ASCII序排序 + 相邻去重(同一代码请只写一行)
+	if (userTitleCount > 1) {
+		qsort(userTitleTable, userTitleCount, sizeof(struct cnTitleEntry), userTitleCmp);
+		w = 1;
+		for (i = 1; i < userTitleCount; i++) {
+			if (strcmp(userTitleTable[w - 1].code, userTitleTable[i].code) != 0)
+				userTitleTable[w++] = userTitleTable[i];
+		}
+		userTitleCount = w;
+	}
+}
+
+//在已加载的用户表中二分查找(表按代码ASCII序排列);未命中返回NULL
+//(注:命中但译名为空串时返回空串指针,表示"该代码已在文件里")
+static const char *userTitleLookup(const char *code)
+{
+	unsigned int lo = 0, hi;
+
+	if (userTitleCount == 0)
+		return NULL;
+	hi = userTitleCount - 1;
+	while ((int)lo <= (int)hi) {
+		unsigned int mid = (lo + hi) / 2;
+		int c = strcmp(userTitleTable[mid].code, code);
+
+		if (c == 0)
+			return userTitleTable[mid].title;
+		if (c < 0)
+			lo = mid + 1;
+		else
+			hi = mid - 1;
+	}
+	return NULL;
+}
+
+//在内置对照表中二分查找(表按代码ASCII序排列);未命中返回NULL
+static const char *builtinTitleLookup(const char *code)
+{
+	int lo = 0, hi = CN_TABLE_COUNT - 1;
+
+	while (lo <= hi) {
+		int mid = (lo + hi) / 2;
+		int c = strcmp(cnTitleTable[mid].code, code);
+
+		if (c == 0)
+			return cnTitleTable[mid].title;
+		if (c < 0)
+			lo = mid + 1;
+		else
+			hi = mid - 1;
+	}
+	return NULL;
+}
+
+static int gtCodeCmp(const void *a, const void *b)
+{
+	return strcmp((const char *)a, (const char *)b);
+}
+
+//进入L1"标题+详细信息"模式浏览记忆卡目录时,自动生成/更新当前浏览记忆卡上的
+//GAMETITLES.TXT(浏览mc0→mc0:/SYS-CONF/,浏览mc1→mc1:/SYS-CONF/,与启动位置无关):
+//扫描当前目录全部存档名,把其中的产品代码追加到文件——内置对照表有译名的自动
+//填上,没有的等号后留空留给用户补翻。文件里已有的行(含用户填写的译名与注释)
+//原样保留、永不覆盖;没有新增代码时不写盘(避免记忆卡无谓写入)。
+static void syncGametitlesFile(const char *path, const FILEINFO *files, int nfiles)
+{
+	static char lastPath[MAX_PATH] = "";
+	static int lastCount = -1;
+	char dest[MAX_PATH], code[11];
+	char (*codes)[11];
+	char *old = NULL, *out, *op;
+	int fd, len, oldLen = 0, nCodes = 0, nNew, i, j, adv;
+	int mc_port, isNew = 1;
+	const char *t;
+
+	//防重入:同一目录且条目数未变 → 本次会话不再重复处理
+	if (nfiles <= 0 || (!strcmp(lastPath, path) && lastCount == nfiles))
+		return;
+	strcpy(lastPath, path);
+	lastCount = nfiles;
+
+	//当前浏览的记忆卡槽位("mc0:/..."→0,"mc1:/..."→1)
+	mc_port = (path[2] >= '0' && path[2] <= '1') ? path[2] - '0' : 0;
+
+	//确保用户表已加载且来自当前浏览的卡(换卡后重新加载,新代码的判定才与该卡文件一致)
+	if (!userTitleState || userTitleLoadedPort != mc_port)
+		loadUserTitles(mc_port);
+
+	//1. 扫描当前目录,提取所有产品代码(目录内去重)
+	codes = malloc(sizeof(code) * nfiles);
+	if (codes == NULL)
+		return;
+	for (i = 0; i < nfiles; i++) {
+		adv = 0;
+		for (j = 0; files[i].name[j] != '\0'; j += (adv > 0 ? adv : 1)) {
+			adv = extractProductCode(files[i].name, j, code);
+			if (adv > 0)
+				break;
+		}
+		if (adv <= 0)
+			continue;
+		for (j = 0; j < nCodes; j++)
+			if (!strcmp(codes[j], code))
+				break;
+		if (j == nCodes)
+			strcpy(codes[nCodes++], code);
+	}
+	if (nCodes == 0) {
+		free(codes);
+		return;  //本目录没有带产品代码的存档
+	}
+
+	//2. 目标固定为当前浏览的记忆卡:浏览mc0就生成在mc0,浏览mc1就生成在mc1,
+	//   不管从哪里启动;SYS-CONF目录不存在则先创建(已存在时失败无害)
+	snprintf(dest, sizeof(dest), "mc%d:/SYS-CONF/%s", mc_port, USER_TITLE_FILE);
+	fd = genOpen(dest, FIO_O_RDONLY);
+	if (fd < 0)
+		mcMkDir(mc_port, 0, "SYS-CONF");
+
+	//3. 读现有文件内容(存在则),原样保留
+	if (fd >= 0) {
+		old = malloc(USER_TITLE_FILE_MAX + 1);
+		if (old == NULL) {  //内存不足:放弃,不动用户文件
+			genClose(fd);
+			free(codes);
+			return;
+		}
+		len = genRead(fd, old, USER_TITLE_FILE_MAX);
+		genClose(fd);
+		if (len <= 0) {
+			//文件存在但读取失败:为防覆盖用户数据,放弃本次同步
+			free(old);
+			free(codes);
+			return;
+		}
+		oldLen = len;
+		isNew = 0;
+	}
+
+	//4. 过滤出文件中尚不存在的代码(空译名条目也算已存在)
+	nNew = 0;
+	for (i = 0; i < nCodes; i++) {
+		if (userTitleLookup(codes[i]) == NULL)
+			memcpy(codes[nNew++], codes[i], sizeof(code));
+	}
+	if (nNew == 0) {
+		free(codes);
+		free(old);
+		return;  //没有新增代码,不写盘
+	}
+	qsort(codes, nNew, sizeof(code), gtCodeCmp);
+
+	//5. 拼接输出:新文件写说明头;已有内容原样保留 + 追加新条目
+	out = malloc(oldLen + nNew * 160 + 1024);
+	if (out == NULL) {
+		free(codes);
+		free(old);
+		return;
+	}
+	op = out;
+	if (isNew) {
+		op += sprintf(op, "# GAMETITLES.TXT —— 自定义游戏中文标题(本文件由程序自动生成)\n");
+		op += sprintf(op, "# 格式: 产品代码=简体中文标题;等号后留空表示待补翻\n");
+		op += sprintf(op, "# '#'或';'开头为注释行;修改保存后需重新运行程序生效\n");
+	} else {
+		memcpy(op, old, oldLen);
+		op += oldLen;
+		if (oldLen > 0 && op[-1] != '\n')
+			*op++ = '\n';  //确保原内容以换行结尾
+	}
+	for (i = 0; i < nNew; i++) {
+		t = builtinTitleLookup(codes[i]);
+		op += sprintf(op, "%s=%s\n", codes[i], (t != NULL) ? t : "");
+	}
+
+	//6. 写盘(仅在确有新增条目时才会走到这里)
+	fd = genOpen(dest, FIO_O_CREAT | FIO_O_WRONLY | FIO_O_TRUNC);
+	if (fd >= 0) {
+		genWrite(fd, out, (int)(op - out));
+		genClose(fd);
+	}
+	free(out);
+	free(old);
+	free(codes);
+}
+
+//从存档目录/文件名中提取光盘产品代码,先查用户自定义表(GAMETITLES.TXT,可覆盖
+//内置译名),再查内置对照表(均按代码ASCII序二分查找);未命中返回NULL。
+//每次调用对name逐位置扫描,但二分查找仅对提取出的候选代码进行,7千余条表也只需约13次比较。
+static const char *lookupCNTitle(const char *name)
+{
+	unsigned int i = 0;
+
+	if (name == NULL || name[0] == '\0')
+		return NULL;
+	if (!userTitleState)
+		loadUserTitles(-1);  //首次使用时加载(非mc浏览场景:mc0→mc1→ELF目录)
+	while (name[i] != '\0') {
+		char code[11];  //4字母 + '-' + 5数字 + '\0'
+		int adv;
+
+		adv = extractProductCode(name, (int)i, code);
+		if (adv > 0) {
+			const char *t = userTitleLookup(code);
+
+			if (t != NULL && t[0] != '\0')
+				return t;  //用户自定义译名(空译名=待补翻,继续查内置表)
+			//内置表二分查找(表按代码ASCII序排列)
+			t = builtinTitleLookup(code);
+			if (t != NULL)
+				return t;
+			i += adv;  //跳过已扫描的模式继续找下一个候选
+			continue;
+		}
+		i++;
+	}
+	return NULL;
+}
+
 int getFilePath(char *out, int cnfmode)
 {
 	char path[MAX_PATH], cursorEntry[MAX_PATH],
 	    msg0[MAX_PATH], msg1[MAX_PATH],
 	    tmp[MAX_PATH], tmp1[MAX_PATH], tmp2[MAX_PATH], ext[8], *p;
 	const unsigned char *mcTitle;
+	const char *cnTitle;  //产品代码对照表命中的中文标题(UTF-8)
 	u64 color;
 	FILEINFO files[MAX_ENTRY];
 	int top = 0, rows;
@@ -1642,6 +2139,11 @@ int getFilePath(char *out, int cnfmode)
 			}
 		}
 
+		//进入L1"标题+详细信息"模式浏览记忆卡时,自动生成/更新GAMETITLES.TXT:
+		//把本目录存档的产品代码写入清单,内置表有译名的自动填上,没有的留空待补
+		if ((file_show == 2) && (path[0] == 'm' && path[1] == 'c'))
+			syncGametitlesFile(path, files, browser_nfiles);
+
 		if (event || post_event) {  //NB: We need to update two frame buffers per event
 
 			//Display section
@@ -1675,7 +2177,12 @@ int getFilePath(char *out, int cnfmode)
 				if (!strcmp(files[top + i].name, ".."))
 					strcpy(tmp, "..");
 
-				else if ((file_show == 2) && files[top + i].title[0] != 0) {
+				else if ((file_show == 2) && (cnTitle = lookupCNTitle(files[top + i].name)) != NULL) {
+					//命中产品代码对照表:显示简体中文标题
+					//(走UTF-8渲染管线,超宽时同样有跑马灯滚动)
+					strcpy(tmp, cnTitle);
+					name_limit = 43 * 8;
+				} else if ((file_show == 2) && files[top + i].title[0] != 0) {
 					mcTitle = files[top + i].title;
 				} else {  //Show normal file/folder names
 					const char *root_label;

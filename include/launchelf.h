@@ -14,7 +14,7 @@
 #define ULE_VERSION_DEBUG_SUFFIX ""
 #endif
 
-#define ULE_VERSION "v4.76_R3Z" ULE_VERSION_DEBUG_SUFFIX
+#define ULE_VERSION "v4.8_ANYI" ULE_VERSION_DEBUG_SUFFIX
 //#ifndef ULE_VERDATE
 //#define ULE_VERDATE __DATE__
 //#endif
@@ -357,6 +357,25 @@ void load_ps2host(void);
 #ifdef UDPFS
 int load_udpfs(void);
 #endif
+#ifdef SMB
+int smbConnect(void);
+void smbDisconnect(void);
+void smbResetState(void);
+void smbPrepareNetworkStack(void);
+int ensurePs2Dev9Loaded(void);
+extern int smb_ready;
+extern char smb_status_msg[MAX_PATH];
+//SMB.CNF内容(网络设置GUI编辑用)
+typedef struct smb_cnf_t {
+	char server_ip[32];
+	int server_port;
+	char share[64];
+	char user[64];
+	char password[64];
+	int password_type;
+} smb_cnf_t;
+int smbLoadCnf(smb_cnf_t *cnf);
+#endif
 int loadHddModules(void);
 #ifdef DVRP
 int loadDVRPHddModules(void);
@@ -553,6 +572,9 @@ int mountDVRPParty(const char *party);
 void unmountAll(void);
 void invalidatePartitionCaches(void);
 int setFileList(const char *path, const char *ext, FILEINFO *files, int cnfmode);
+#ifdef SMB
+int readSMB(const char *path, FILEINFO *info, int max);
+#endif
 
 /* hdd.c */
 void DebugDisp(char *Message);

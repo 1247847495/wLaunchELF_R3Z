@@ -11,6 +11,26 @@ u32 old_pad = 0, old_pad_t[2] = {0, 0};
 u32 new_pad, new_pad_t[2];
 u32 joy_value = 0;
 static int test_joy = 0;
+//IOP高负载(如进入APA硬盘)会使padman采样出现"按键数据↔全零"交替的异常;
+//交替的全零段若被确认为松开,按键"重现"会被当作全新按下(无首按延迟),
+//导致"按一下变两三下"。这里用时间窗口消抖:全零持续不足120ms一律视为
+//采样毛刺不确认松开,old状态保持,重现时仍走repeat限速,不产生额外事件。
+//zero_since[nr]_t[port]记录首个全零帧的时刻(0=当前非全零)。
+#define PAD_RELEASE_CONFIRM_MS 120  //全零持续超过该时长才确认松开
+static u64 zero_since_t[2] = {0, 0};
+static u64 zero_since_nr_t[2] = {0, 0};
+//假松开→重现保护:IOP长卡顿(全零超120ms)会被确认为松开,卡顿结束后按键
+//"重现"又多出一次事件。这里记录确认松开的时刻与组合,100ms内重现的按键
+//包含松开前的完整组合(允许附加数据抖动位)即视为假松开的延续:恢复状态
+//但不出事件。真实双击同键的间隔(人手完全松开再按下)远大于100ms,不受影响。
+#define PAD_REAPPEAR_GUARD_MS 100
+static u64 rel_time_t[2] = {0, 0}, rel_time_nr_t[2] = {0, 0};
+static u32 rel_pad_t[2] = {0, 0}, rel_pad_nr_t[2] = {0, 0};
+//事件级限速:每个手柄口两次按钮事件至少间隔40ms(与按住连发同速25Hz)。
+//padRead偶发失败会造成旧事件值被重复消费,采样异常会造成"假松开→重现"
+//事件风暴;无论输入数据怎么异常,事件率被钳制在正常连发速度以内,
+//移动/按键永远不会异常加速。
+static u64 evt_min_time[2] = {0, 0};
 
 void clearPadPressState(void)
 {
@@ -21,6 +41,12 @@ void clearPadPressState(void)
 	new_pad = 0;
 	paddata = 0;
 	joy_value = 0;
+	memset(zero_since_t, 0, sizeof(zero_since_t));
+	memset(zero_since_nr_t, 0, sizeof(zero_since_nr_t));
+	memset(rel_time_t, 0, sizeof(rel_time_t));
+	memset(rel_time_nr_t, 0, sizeof(rel_time_nr_t));
+	memset(rel_pad_t, 0, sizeof(rel_pad_t));
+	memset(rel_pad_nr_t, 0, sizeof(rel_pad_nr_t));
 }
 
 //---------------------------------------------------------------------------
@@ -29,7 +55,7 @@ void clearPadPressState(void)
 //---------------------------------------------------------------------------
 int readpad_noKBnoRepeat(void)
 {
-	int port, state, ret[2];
+	int port, state, ret[2] = {0, 0};
 
 	for (port = 0; port < 2; port++) {
 		if ((state = padGetState(port, 0)) == PAD_STATE_STABLE || (state == PAD_STATE_FINDCTP1)) {
@@ -37,13 +63,47 @@ int readpad_noKBnoRepeat(void)
 			ret[port] = padRead(port, 0, &buttons_t[port]);
 			if (ret[port] != 0) {
 				paddata_t[port] = 0xffff ^ buttons_t[port].btns;
-				new_pad_t[port] = paddata_t[port] & ~old_pad_t[port];
-				old_pad_t[port] = paddata_t[port];
+				if (old_pad_t[port] != 0 && paddata_t[port] == 0) {
+					//从按住到全零:短窗口内视为采样毛刺,不确认松开
+					if (zero_since_nr_t[port] == 0)
+						zero_since_nr_t[port] = Timer();
+					if (Timer() - zero_since_nr_t[port] < PAD_RELEASE_CONFIRM_MS) {
+						new_pad_t[port] = 0;  //保持old_pad_t,按键重现时不产生额外事件
+					} else {
+						rel_pad_nr_t[port] = old_pad_t[port];  //确认松开,记录组合
+						rel_time_nr_t[port] = Timer();
+						old_pad_t[port] = 0;
+						zero_since_nr_t[port] = 0;
+						new_pad_t[port] = 0;
+					}
+				} else {
+					zero_since_nr_t[port] = 0;  //数据非零:清全零计时
+					if (old_pad_t[port] == 0 && paddata_t[port] != 0 &&
+					    (paddata_t[port] & rel_pad_nr_t[port]) == rel_pad_nr_t[port] &&
+					    Timer() - rel_time_nr_t[port] < PAD_REAPPEAR_GUARD_MS) {
+						//松开后100ms内重现(含)松开前的组合:IOP卡顿假松开,恢复状态不出事件
+						old_pad_t[port] = paddata_t[port];
+						new_pad_t[port] = 0;
+					} else {
+						new_pad_t[port] = paddata_t[port] & ~old_pad_t[port];
+						old_pad_t[port] = paddata_t[port];
+					}
+				}
+			} else {
+				//padRead失败:清掉旧事件值,防止被主循环当作新事件重复消费
+				new_pad_t[port] = 0;
 			}
 		} else {
 			//Deal with cases where pad state is not valid for padRead
 			new_pad_t[port] = 0;
 		}                                   //ends 'if' testing for state valid for padRead
+		//事件级限速:距上次事件不足40ms的事件丢弃(毛刺风暴防护)
+		if (new_pad_t[port] != 0) {
+			if (Timer() < evt_min_time[port])
+				new_pad_t[port] = 0;
+			else
+				evt_min_time[port] = Timer() + 40;
+		}
 	}                                       //ends for
 	new_pad = new_pad_t[0] | new_pad_t[1];  //This has only new button bits
 	paddata = paddata_t[0] | paddata_t[1];  //This has all pressed button bits
@@ -59,7 +119,7 @@ int readpad_no_KB(void)
 {
 	static u64 rpt_time[2] = {0, 0};
 	static int rpt_count[2];
-	int port, state, ret[2];
+	int port, state, ret[2] = {0, 0};
 
 	for (port = 0; port < 2; port++) {
 		if ((state = padGetState(port, 0)) == PAD_STATE_STABLE || (state == PAD_STATE_FINDCTP1)) {
@@ -106,10 +166,42 @@ int readpad_no_KB(void)
 					}
 				} else {
 					//pad data has changed !
-					rpt_count[port] = 0;
-					rpt_time[port] = Timer() + 400;  //Init delay = 400ms
-					old_pad_t[port] = paddata_t[port];
+					if (old_pad_t[port] != 0 && paddata_t[port] == 0) {
+						//从按住到全零:短窗口内视为采样毛刺/IOP卡顿,不确认松开
+						if (zero_since_t[port] == 0)
+							zero_since_t[port] = Timer();
+						if (Timer() - zero_since_t[port] < PAD_RELEASE_CONFIRM_MS) {
+							//保持old_pad_t不变,让按键"重现"时仍走repeat限速分支
+							new_pad_t[port] = 0;
+						} else {
+							rpt_count[port] = 0;  //确认松开
+							rpt_time[port] = Timer() + 400;
+							rel_pad_t[port] = old_pad_t[port];  //记录松开前的组合
+							rel_time_t[port] = Timer();
+							old_pad_t[port] = 0;
+							zero_since_t[port] = 0;
+						}
+					} else {
+						if (old_pad_t[port] == 0 && paddata_t[port] != 0 &&
+						    (paddata_t[port] & rel_pad_t[port]) == rel_pad_t[port] &&
+						    Timer() - rel_time_t[port] < PAD_REAPPEAR_GUARD_MS) {
+							//松开后100ms内重现(含)松开前的组合:IOP卡顿假松开,
+							//恢复状态不出事件,repeat从现在重新起算
+							rpt_count[port] = 0;
+							rpt_time[port] = Timer() + 400;
+							old_pad_t[port] = paddata_t[port];
+							new_pad_t[port] = 0;
+						} else {
+							rpt_count[port] = 0;
+							rpt_time[port] = Timer() + 400;  //Init delay = 400ms
+							old_pad_t[port] = paddata_t[port];
+						}
+						zero_since_t[port] = 0;
+					}
 				}
+			} else {
+				//padRead失败:清掉旧事件值,防止被主循环当作新事件重复消费
+				new_pad_t[port] = 0;
 			}
 		} else {
 			//Deal with cases where pad state is not valid for padRead
@@ -117,6 +209,14 @@ int readpad_no_KB(void)
 			new_pad_t[port] = 0;
 			//old_pad_t[port]=0; //Clearing this could cause hasty repeats
 		}  //ends 'if' testing for state valid for padRead
+		//事件级限速:距上次事件不足40ms的事件丢弃(毛刺风暴防护);
+		//正常连发间隔恰为40ms,不受影响
+		if (new_pad_t[port] != 0) {
+			if (Timer() < evt_min_time[port])
+				new_pad_t[port] = 0;
+			else
+				evt_min_time[port] = Timer() + 40;
+		}
 	}      //ends for
 	new_pad = new_pad_t[0] | new_pad_t[1];
 	paddata = paddata_t[0] | paddata_t[1];  //This has all pressed button bits
@@ -127,9 +227,17 @@ int readpad_no_KB(void)
 //---------------------------------------------------------------------------
 // simPadKB attempts reading data from a USB keyboard, and map this as a
 // virtual gamepad. (Very improvised and sloppy, but it should work fine.)
+//IOP拥塞时ps2kbd驱动会返回脏扫描码,假键盘事件与手柄真实按键叠加会
+//造成"按一下变多下",因此键盘事件必须经过与手柄一致的防护:
+//1.与手柄当前按住的键重叠的事件直接丢弃(手柄状态机已在管理该键)
+//2.与手柄事件共享40ms限速桶(手柄事件后40ms内的键盘事件丢弃)
+//3.同键120ms节流(键盘噪声常为同码连发;真实键盘按住auto-repeat约
+//  92ms间隔,节流后约8Hz,菜单导航仍可正常移动)
 //---------------------------------------------------------------------------
 int simPadKB(void)
 {
+	static u64 kb_evt_time = 0;
+	static u32 kb_last_pad = 0;
 	int ret, command;
 	char KeyPress;
 
@@ -251,6 +359,29 @@ int simPadKB(void)
 		default:  //Unrecognized key => no pad button
 			ret = 0;
 			break;
+	}
+	if (ret && new_pad) {
+		u64 now = Timer();
+		//防护1:手柄已按住的键,键盘再报同键是重复噪声,直接丢弃
+		if (new_pad & paddata_t[0] || new_pad & paddata_t[1]) {
+			new_pad = 0;
+			return 0;
+		}
+		//防护2:与手柄事件同桶限速
+		if (now < evt_min_time[0] || now < evt_min_time[1]) {
+			new_pad = 0;
+			return 0;
+		}
+		//防护3:同键120ms节流
+		if (new_pad == kb_last_pad && now - kb_evt_time < 120) {
+			new_pad = 0;
+			return 0;
+		}
+		kb_evt_time = now;
+		kb_last_pad = new_pad;
+		//键盘事件也推高手柄限速桶,阻止"手柄事件+键盘噪声"叠加
+		evt_min_time[0] = now + 40;
+		evt_min_time[1] = now + 40;
 	}
 	return ret;
 }

@@ -178,6 +178,9 @@ void unmountAll(void)
 		}
 	}
 	latestMount = -1;
+#ifdef SMB
+	smbDisconnect();
+#endif
 #ifdef DVRP
 	for (i = 0; i < MOUNT_LIMIT; i++) {
 		if (mountedDVRPParty[i][0] != 0) {

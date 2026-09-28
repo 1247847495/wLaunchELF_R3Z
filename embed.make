@@ -895,3 +895,29 @@ $(ISO_BIN_DIR)system.cnf: $(ISO_BIN_DIR)
 	echo "BOOT2 = cdrom0:\$(ISO_BIN_ELF);1" >"$@"
 	echo VER = $(SYSTEMCNF_VERSION)>>"$@"
 	echo VMODE = $(SYSTEMCNF_VMODE)>>"$@"
+
+#---{ SMB }---#
+#SMB stack from SNESticleAurora: classic pre-netman modules (lwIP 2.0.3)
+#plus the patched smbman tolerant of embedded SMB1 servers.
+SMB_PS2IP_SOURCE = iop/__precompiled/smb_ps2ip.irx
+SMB_SMAP_SOURCE = iop/__precompiled/smb_smap.irx
+SMB_PS2IPS_SOURCE = iop/__precompiled/smb_ps2ips.irx
+SMBMAN_SOURCE = iop/__precompiled/smbman.irx
+
+ifeq ($(SMB),1)
+ifeq ($(wildcard $(SMBMAN_SOURCE)),)
+$(error Missing $(SMBMAN_SOURCE))
+endif
+endif
+
+$(EE_ASM_DIR)smb_ps2ip_irx.s: $(SMB_PS2IP_SOURCE) | $(EE_ASM_DIR)
+	$(BIN2S) $< $@ smb_ps2ip_irx
+
+$(EE_ASM_DIR)smb_smap_irx.s: $(SMB_SMAP_SOURCE) | $(EE_ASM_DIR)
+	$(BIN2S) $< $@ smb_smap_irx
+
+$(EE_ASM_DIR)smb_ps2ips_irx.s: $(SMB_PS2IPS_SOURCE) | $(EE_ASM_DIR)
+	$(BIN2S) $< $@ smb_ps2ips_irx
+
+$(EE_ASM_DIR)smbman_irx.s: $(SMBMAN_SOURCE) | $(EE_ASM_DIR)
+	$(BIN2S) $< $@ smbman_irx

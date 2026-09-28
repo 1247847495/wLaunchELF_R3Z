@@ -34,7 +34,8 @@ enum CONFIG_SCREEN {
 
 	//First option after colour selectors
 	CONFIG_SCREEN_AFT_COLORS,
-	CONFIG_SCREEN_TV_MODE = CONFIG_SCREEN_AFT_COLORS,
+	CONFIG_SCREEN_THEME = CONFIG_SCREEN_AFT_COLORS,
+	CONFIG_SCREEN_TV_MODE,
 	CONFIG_SCREEN_TV_STARTX,
 	CONFIG_SCREEN_TV_STARTY,
 
@@ -46,6 +47,87 @@ enum CONFIG_SCREEN {
 
 	CONFIG_SCREEN_COUNT,
 };
+
+//两套整体配色预设:银灰白(亮)主题与纯黑(暗)主题,一键切换全部8色
+static const u64 theme_light[COLOR_COUNT] = {
+	GS_SETREG_RGBA(0xb8, 0xb8, 0xb8, 0),  //背景:银灰白
+	GS_SETREG_RGBA(0x35, 0x35, 0x35, 0),  //边框:深灰
+	GS_SETREG_RGBA(0x00, 0x58, 0xa6, 0),  //选择:蓝
+	GS_SETREG_RGBA(0x21, 0x21, 0x21, 0),  //文字:深灰黑
+	GS_SETREG_RGBA(0xb8, 0x5a, 0x00, 0),  //文件夹:橙棕
+	GS_SETREG_RGBA(0x48, 0x6a, 0x00, 0),  //ELF:橄榄绿
+	GS_SETREG_RGBA(0x43, 0x3a, 0x7c, 0),  //未知:紫蓝
+	GS_SETREG_RGBA(0x8a, 0x74, 0x00, 0),  //编辑器文字:暗黄
+};
+static const u64 theme_dark[COLOR_COUNT] = {
+	GS_SETREG_RGBA(0x00, 0x00, 0x00, 0),  //背景:纯黑
+	GS_SETREG_RGBA(0x80, 0x80, 0x80, 0),  //边框:中灰
+	GS_SETREG_RGBA(0x00, 0x58, 0xa6, 0),  //选择:蓝
+	GS_SETREG_RGBA(0xE0, 0xE0, 0xE0, 0),  //文字:白
+	GS_SETREG_RGBA(0xFF, 0xC8, 0x00, 0),  //文件夹:金黄
+	GS_SETREG_RGBA(0x00, 0xC8, 0x00, 0),  //ELF:绿
+	GS_SETREG_RGBA(0x9A, 0x9A, 0xFF, 0),  //未知:浅蓝紫
+	GS_SETREG_RGBA(0xC8, 0xC8, 0xC8, 0),  //编辑器文字:浅灰
+};
+//按背景亮度判断当前是否暗色主题(背景三通道之和低于192视为暗)
+static int themeIsDark(void)
+{
+	u32 bg = setting->color[COLOR_BACKGR];
+	return ((bg & 0xFF) + ((bg >> 8) & 0xFF) + ((bg >> 16) & 0xFF)) < 192;
+}
+
+//启动时选择背景主题:银灰白/纯黑二选一,选中即时预览整个画面配色,
+//按确认键进入主菜单。选择仅本次生效(不写入配置),下次启动再次选择;
+//随时可在"显示设置→背景主题"里切换并保存。
+void ThemeSelectStartup(void)
+{
+	int sel, event = 1, post_event = 0;
+	int x, y, w, i;
+	char c[MAX_PATH];
+	const u64 *theme;
+	u32 fg;
+
+	sel = themeIsDark() ? 1 : 0;  //默认预选当前主题
+	while (1) {
+		waitPadReady(0, 0);
+		if (readpad()) {
+			if (new_pad & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT)) {
+				sel ^= 1;  //上下左右都在两个主题间切换
+				event |= 2;
+			} else if (new_pad & (PAD_CIRCLE | PAD_CROSS | PAD_START)) {
+				theme = sel ? theme_dark : theme_light;
+				for (i = 0; i < COLOR_COUNT; i++)
+					setting->color[i] = theme[i];
+				return;  //应用选中主题并进入主菜单
+			}
+		}
+		if (event || post_event) {  //NB: We need to update two frame buffers per event
+			theme = sel ? theme_dark : theme_light;
+			fg = theme[COLOR_TEXT];
+			clrScr(theme[COLOR_BACKGR]);  //整个画面随选中主题即时预览
+
+			sprintf(c, "%s", LNG(Background_Theme));
+			w = printXY(c, 0, 0, 0, FALSE, 0);
+			printXY(c, (SCREEN_WIDTH - w) / 2, Menu_start_y, fg, TRUE, 0);
+
+			y = Menu_start_y + FONT_HEIGHT * 3;
+			x = Menu_start_x + FONT_WIDTH * 4;
+			sprintf(c, "%s", LNG(Theme_Light));
+			printXY(c, x, y, fg, TRUE, 0);
+			sprintf(c, "%s", LNG(Theme_Dark));
+			printXY(c, x, y + FONT_HEIGHT, fg, TRUE, 0);
+
+			drawChar(LEFT_CUR, Menu_start_x, y + sel * FONT_HEIGHT, theme[COLOR_SELECT]);
+
+			sprintf(c, "%s", LNG(OK));
+			w = printXY(c, 0, 0, 0, FALSE, 0);
+			printXY(c, (SCREEN_WIDTH - w) / 2, Menu_start_y + FONT_HEIGHT * 6, fg, TRUE, 0);
+		}
+		drawScr();
+		post_event = event;
+		event = 0;
+	}
+}
 
 void Config_Screen(void)
 {
@@ -141,6 +223,15 @@ void Config_Screen(void)
 						setting->color[s / 3] =
 						    GS_SETREG_RGBA(rgb[s / 3][0], rgb[s / 3][1], rgb[s / 3][2], 0);
 					}
+				} else if (s == CONFIG_SCREEN_THEME) {
+					//切换背景主题:暗色时切到银灰白,亮色时切到纯黑,整体替换8色
+					const u64 *theme = themeIsDark() ? theme_light : theme_dark;
+					for (i = 0; i < COLOR_COUNT; i++) {
+						setting->color[i] = theme[i];
+						rgb[i][0] = theme[i] & 0xFF;
+						rgb[i][1] = (theme[i] >> 8) & 0xFF;
+						rgb[i][2] = (theme[i] >> 16) & 0xFF;
+					}
 				} else if (s == CONFIG_SCREEN_TV_MODE) {
 					setting->TV_mode = (setting->TV_mode + 1) % TV_mode_COUNT;  //Change between the various modes
 					updateScreenMode();
@@ -235,6 +326,8 @@ void Config_Screen(void)
 				}  //ends loop for colour RGB values
 				y += FONT_HEIGHT * 2;
 				bool_label_width = (int)strlen(LNG(TV_mode));
+				if ((int)strlen(LNG(Background_Theme)) > bool_label_width)
+					bool_label_width = (int)strlen(LNG(Background_Theme));
 				if ((int)strlen(LNG(Screen_X_offset)) > bool_label_width)
 					bool_label_width = (int)strlen(LNG(Screen_X_offset));
 				if ((int)strlen(LNG(Screen_Y_offset)) > bool_label_width)
@@ -253,6 +346,11 @@ void Config_Screen(void)
 					tv_mode_value = "Progressive";
 				else
 					tv_mode_value = "AUTO";
+				configFormatLabelValueAligned(c, sizeof(c), LNG(Background_Theme),
+				                              themeIsDark() ? LNG(Theme_Dark) : LNG(Theme_Light), bool_label_width);
+				printXY(c, x, y, setting->color[COLOR_TEXT], TRUE, 0);
+				y += FONT_HEIGHT;
+
 				configFormatLabelValueAligned(c, sizeof(c), LNG(TV_mode), tv_mode_value, bool_label_width);
 				printXY(c, x, y, setting->color[COLOR_TEXT], TRUE, 0);
 				y += FONT_HEIGHT;
@@ -319,8 +417,8 @@ void Config_Screen(void)
 					                 "0:%s \xFF"
 					                 "1:%s",
 					              LNG(Add), LNG(Subtract));
-			} else if (s == CONFIG_SCREEN_TV_MODE || s == CONFIG_SCREEN_MENU_FRAME || s == CONFIG_SCREEN_POPUP_OPAQUE) {
-				//if cursor at 'TV mode', 'Menu Frame' or 'Popups Opaque'
+			} else if (s == CONFIG_SCREEN_THEME || s == CONFIG_SCREEN_TV_MODE || s == CONFIG_SCREEN_MENU_FRAME || s == CONFIG_SCREEN_POPUP_OPAQUE) {
+				//if cursor at 'Background Theme', 'TV mode', 'Menu Frame' or 'Popups Opaque'
 				if (swapKeys)
 					len = sprintf(c, "\xFF"
 					                 "1:%s",

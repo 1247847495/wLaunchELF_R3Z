@@ -862,8 +862,11 @@ int readHDD(const char *path, FILEINFO *info, int max)
 		return 0;
 
 	if (hddNparties[hdd_unit] == 0) {
-		loadHddModules();
+		if (!loadHddModules())
+			return 0;  //失败环节已由loadHddModules显示在消息栏
 		setPartyListForDevice(hdd_device);
+		if (hddNparties[hdd_unit] == 0)
+			drawMsg("硬盘无分区: 硬盘未格式化或APA读取异常");
 	}
 
 	if (isHddRootPath(path)) {
@@ -1453,6 +1456,48 @@ int readUDPFS(const char *path, FILEINFO *info, int max)
 }
 #endif
 #endif
+#ifdef SMB
+int readSMB(const char *path, FILEINFO *info, int max)
+{
+	iox_dirent_t dirent;
+	int fd, count = 0;
+
+	if (!smbConnect()) {
+		drawMsg(smb_status_msg[0] ? smb_status_msg : "SMB连接失败");
+		return 0;
+	}
+
+	if ((fd = fileXioDopen(path)) < 0)
+		return 0;
+
+	while (fileXioDread(fd, &dirent) > 0) {
+		if (strcmp(dirent.name, ".") && strcmp(dirent.name, "..")) {
+			size_valid = 1;
+			time_valid = 1;
+			strcpy(info[count].name, dirent.name);
+			clearMcTable(&info[count].stats);
+
+			if (!(dirent.stat.mode & FIO_S_IFDIR))
+				info[count].stats.AttrFile = MC_ATTR_norm_file;
+			else
+				info[count].stats.AttrFile = MC_ATTR_norm_folder;
+
+			info[count].stats.FileSizeByte = dirent.stat.size;
+			info[count].stats.Reserve2 = dirent.stat.hisize;
+			memcpy((void *)&info[count].stats._Create, dirent.stat.ctime, 8);
+			info[count].stats._Create.Year += 1900;
+			memcpy((void *)&info[count].stats._Modify, dirent.stat.mtime, 8);
+			info[count].stats._Modify.Year += 1900;
+			count++;
+			if (count >= max)
+				break;
+		}
+	}
+	fileXioDclose(fd);
+	strcpy(info[count].name, "\0");
+	return count;
+}
+#endif
 //------------------------------
 //endfunc readHOST/readUDPFS
 //--------------------------------------------------------------
@@ -1572,6 +1617,10 @@ int getDir(const char *path, FILEINFO *info)
 	else if (!strncmp(path, "udpfs", 5))
 		n = readUDPFS(path, info, max);
 #endif
+#endif
+#ifdef SMB
+	else if (!strncmp(path, "smb", 3))
+		n = readSMB(path, info, max);
 #endif
 #ifdef MMCE
 	else if (!strncmp(path, "mmce", 4)) {
@@ -1807,6 +1856,10 @@ int setFileList(const char *path, const char *ext, FILEINFO *files, int cnfmode)
 			}
 #ifdef UDPFS
 			strcpy(files[nfiles].name, "udpfs:");
+			files[nfiles++].stats.AttrFile = sceMcFileAttrSubdir;
+#endif
+#ifdef SMB
+			strcpy(files[nfiles].name, "smb:");
 			files[nfiles++].stats.AttrFile = sceMcFileAttrSubdir;
 #endif
 			if (cnfmode < 2) {

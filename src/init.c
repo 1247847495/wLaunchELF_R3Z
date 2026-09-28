@@ -192,11 +192,12 @@ enum block_storage_stack_mode {
 };
 static int block_storage_stack_mode = BLOCK_STACK_NONE;
 
-#if defined(ETH) && defined(UDPFS)
+#if defined(ETH) || defined(SMB) || defined(UDPFS)
 enum network_stack_mode {
 	NETWORK_STACK_NONE = 0,
 	NETWORK_STACK_ETH,
 	NETWORK_STACK_UDPFS,
+	NETWORK_STACK_SMB,
 };
 static int network_stack_mode = NETWORK_STACK_NONE;
 #endif
@@ -250,7 +251,7 @@ static void resetDriverStackLoadTracking(void);
 static void resetRuntimeDeviceState(int show_status);
 static void switchStorageDriverStack(int target_mode);
 static void switchBlockStorageStack(int target_mode);
-#if defined(ETH) && defined(UDPFS)
+#if defined(ETH) || defined(SMB) || defined(UDPFS)
 static void switchNetworkStack(int target_mode);
 #endif
 #ifdef EXFAT
@@ -333,6 +334,17 @@ static void load_ps2dev9(void)
 }
 //------------------------------
 //endfunc load_ps2dev9
+//---------------------------------------------------------------------------
+#ifdef SMB
+int ensurePs2Dev9Loaded(void)
+{
+	load_ps2dev9();
+	return ps2dev9_loaded;
+}
+//------------------------------
+//endfunc ensurePs2Dev9Loaded
+//---------------------------------------------------------------------------
+#endif
 //---------------------------------------------------------------------------
 static void prepareDev9Poweroff(void)
 {
@@ -686,7 +698,7 @@ static void load_udpfs_stack(void)
 	int ret, ID __attribute__((unused));
 	char ministack_arg[32];
 
-#if defined(ETH) && defined(UDPFS)
+#if defined(ETH) || defined(SMB) || defined(UDPFS)
 	switchNetworkStack(NETWORK_STACK_UDPFS);
 #endif
 	if (!have_udpfs_smap || !have_udpfs_ministack || !have_udpfs_ioman || !ps2dev9_loaded)
@@ -1380,7 +1392,7 @@ static void resetDriverStackLoadTracking(void)
 {
 	storage_driver_stack_mode = STORAGE_STACK_DEFAULT;
 	block_storage_stack_mode = BLOCK_STACK_NONE;
-#if defined(ETH) && defined(UDPFS)
+#if defined(ETH) || defined(SMB) || defined(UDPFS)
 	network_stack_mode = NETWORK_STACK_NONE;
 #endif
 }
@@ -1475,7 +1487,7 @@ static void switchBlockStorageStack(int target_mode)
 	}
 }
 
-#if defined(ETH) && defined(UDPFS)
+#if defined(ETH) || defined(SMB) || defined(UDPFS)
 static void switchNetworkStack(int target_mode)
 {
 	if (network_stack_mode == target_mode)
@@ -1486,6 +1498,17 @@ static void switchNetworkStack(int target_mode)
 		resetRuntimeDeviceState(TRUE);
 	}
 	network_stack_mode = target_mode;
+}
+#endif
+
+#ifdef SMB
+//Public hook for src/smb.c: make sure the ps2ip+smbman stack is the
+//active network stack before its modules are loaded. When the UDPFS
+//stack is currently active this resets the IOP (only one stack may
+//bind SMAP per IOP session) and reloads the core modules.
+void smbPrepareNetworkStack(void)
+{
+	switchNetworkStack(NETWORK_STACK_SMB);
 }
 #endif
 
@@ -1735,6 +1758,28 @@ int loadHddModules(void)
 		if (!have_HDD_modules) {
 			DPRINTF(" [HDD]: stack incomplete (HDD=%d FS=%d)\n",
 			        have_ps2hdd, have_ps2fs);
+			//加载失败时在屏幕上指出具体失败的环节,便于现场排查
+			if (!is_early_init) {
+				const char *part;
+				char msg[96];
+#ifdef EXFAT
+				if (!have_bdm)
+					part = "BDM";
+				else if (!have_bdmfs)
+					part = "BDMFS_FATFS";
+				else if (!have_ata_bd)
+					part = "ATA_BD";
+				else if (!ps2dev9_loaded)
+					part = "DEV9";
+				else
+#endif
+				if (!have_ps2hdd)
+					part = "PS2HDD";
+				else
+					part = "PS2FS";
+				snprintf(msg, sizeof(msg), "硬盘驱动加载失败: %s", part);
+				drawMsg(msg);
+			}
 		}
 	}
 	if (have_HDD_modules)
@@ -1901,6 +1946,9 @@ static void clearIopModuleState(void)
 #ifdef MX4SIO
 	have_mx4sio = 0;
 	mx4sio_driver_running = 0;
+#endif
+#ifdef SMB
+	smbResetState();
 #endif
 	resetDriverStackLoadTracking();
 	ps2dev9_loaded = 0;

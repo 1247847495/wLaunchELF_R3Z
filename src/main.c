@@ -8,6 +8,7 @@
 #include "main_menu.h"
 #include "main_modules.h"
 #include "main_startup.h"
+#include "config_private.h"
 
 //#define DEBUG
 #ifdef DEBUG
@@ -143,6 +144,9 @@ int main(int argc, char *argv[])
 	//Here nearly everything is ready for the main menu event loop
 	//But before we start that, we need to validate CNF_Path
 	validateConfiguredCnfPath();
+
+	//启动时选择背景主题(银灰白/纯黑二选一,选中即时预览;仅本次生效)
+	ThemeSelectStartup();
 
 	RunPath[0] = 0;  //Nothing to run yet
 	cdmode = -1;     //flag unchecked cdmode state
