@@ -15,12 +15,15 @@ wLaunchELF, formerly known as uLaunchELF, also known as wLE or uLE (abbreviated)
 | __dvr_hdd0:/__ | PSX DESR-XXXX digital video recorder hdd partition/side | Hidden on non-PSX |
 | __cdfs:/__ | CD/DVD File System | Always |
 | __udpfs:/__ | Network interface used with [PCM720s UDPFSD Server](https://github.com/pcm720/udpfsd) | Always |
+| __smb:/__[^3] | SMB1 network share from a PC/NAS | Always |
 
 Drivers load on demand for maximum compatibility and initial boot speed.
 
 [^1]: MMCE and MX4SIO will incure an IOP reboot as the 2 are incompatible.
 
 [^2]: Dual HDD/ATA support is built in for future development.
+
+[^3]: SMB and UDPFS are mutually exclusive network stacks. Selecting `smb:/` in the device list performs an IOP reset to switch to the SMB stack (classic pre-netman module set: ps2dev9 + ps2ip + smap + ps2ips + smbman).
 
 ## Features:
 - LoadBOOTer MC Exploit installer, supports Retail PS2/PSX and DEX(DTL-HXXXXX)
@@ -47,6 +50,7 @@ Drivers load on demand for maximum compatibility and initial boot speed.
 - [APA Header injection](#HDD-APA-header-injection) from usb, mmce and udpfs. Thanks to Alex Parrado and @israpps
 - warnings when modifying/deleting exploit folders on PS2/PSX
 - Support for PS3/PS4 Dualshocks thanks to Alex Parrado (DS34 build)
+- [SMB share access](#smb-share-access) (`smb:/`) with credentials from `SMB.CNF`, editable in the Network Settings GUI
 
 ### LaunchELF with Args
 
@@ -145,6 +149,51 @@ violence_flag = 0
 content_type = 255
 content_subtype = 0
 ```
+
+</details>
+
+### SMB share access
+
+<details>
+
+<summary>SMB share access</summary>
+
+Browse files on a Windows/Linux PC or NAS shared folder directly from the FileBrowser via the `smb:/` device.
+
+The SMB stack loads on demand: selecting `smb:/` in the device list performs an IOP reset and loads the classic pre-netman module set (ps2dev9 + ps2ip + smap + ps2ips + smbman), proven stable with embedded SMB1 servers (routers, NAS boxes). Switching to `udpfs:/` later resets back to the UDPFS stack, so both network backends coexist in one ELF.
+
+#### Configuration
+
+Server credentials are read from `SMB.CNF`, searched in this order:
+
+1. Next to the launched ELF
+2. `mc0:/SYS-CONF/SMB.CNF` / `mc1:/SYS-CONF/SMB.CNF` (launch slot first)
+
+```ini
+SERVER_IP=192.168.2.1
+SERVER_PORT=445
+SHARE=TDDOWNLOAD
+USER=guest
+PASSWORD=
+PASSWORD_TYPE=0
+```
+
+| Key | Meaning |
+|---|---|
+| `SERVER_IP` | IP address of the SMB server |
+| `SERVER_PORT` | SMB port, usually 445 (139 also works) |
+| `SHARE` | Share name, without slashes |
+| `USER` | Login name, `guest` for anonymous access |
+| `PASSWORD` | Password, empty for guest access |
+| `PASSWORD_TYPE` | `0` = no password / guest, `1` = plain text password, `2` = password hash (OPL style) |
+
+The PS2 side network settings (local IP, netmask, gateway) come from the standard `IPCONFIG.DAT`, written by the Network Settings GUI (`Configuration` -> `Network Settings`). The same GUI also edits the SMB server settings above and saves them back to `SMB.CNF`.
+
+#### Notes
+
+- OPL-style `smb.cnf` files also load: unknown keys are ignored and `smbServer_IP`/`smbShare`/`smbUsername`/`smbPassword`/`smbPasswordType` aliases are accepted.
+- The share must be SMB1-compatible (most NAS/routers keep SMB1 support; Windows may need the SMB 1.0/CIFS feature enabled).
+- Chinese/UTF-8 filenames in the share are displayed losslessly.
 
 </details>
 
